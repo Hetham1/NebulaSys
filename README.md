@@ -11,7 +11,17 @@ The manager for package managers. This project aims to provide unified interface
 
 *   **List User-Installed Packages:** Displays packages explicitly installed by the user, along with their direct dependencies. Users can toggle the visibility of dependencies for each package.
 *   **List All Installed Packages:** Provides a flat list of all packages currently installed on the system.
-*   **Efficient Backend:** Utilizes Rust for backend logic, invoking the `dnf` command-line tool to fetch package information and parsing its output.
+*   **Efficient Backend:** Utilizes Rust for backend logic, invoking system package management tools (`dnf`, `rpm`) to fetch package information and parsing its output.
+*   **User Interface:** Modern and responsive UI built with Svelte.
+
+#### Key Features (Recent Enhancements):
+
+*   **Persistent Backend Caching:** User-installed packages and their dependencies are cached in a local JSON file (`package_cache.json`). This makes subsequent application loads and view switches nearly instantaneous.
+*   **Optimized Dependency Resolution:** Uses `rpm -qR <package_name>` for resolving dependencies of installed packages, which is generally faster and lighter than `dnf repoquery --requires` for this purpose.
+*   **Faster "All Installed" List:** Employs `rpm -qa --qf '%{NAME}\n'` for a rapid retrieval of all installed package names.
+*   **Controlled Concurrency:** Limits the number of concurrent `rpm` processes during dependency fetching to prevent system overload and crashes, ensuring stability even with many packages.
+*   **Manual Cache Refresh:** A "Refresh Current View" button allows users to bypass the local cache and fetch fresh package information from the system on demand.
+*   **Responsive UI Caching:** The Svelte frontend also maintains a session cache for quickly re-rendering views.
 
 #### Technical Details:
 
@@ -31,6 +41,27 @@ The manager for package managers. This project aims to provide unified interface
 ---
 
 ## Changelog
+
+### `nebula-dnf` - Performance and Stability Overhaul (November 2023)
+
+This set of updates focused on dramatically improving the performance, stability, and responsiveness of the `nebula-dnf` application, especially when dealing with a large number of installed packages.
+
+*   **Implemented Persistent Backend Caching:**
+    *   User-installed packages and their dependencies are now cached in a local JSON file (`package_cache.json`) within the application's local data directory.
+    *   Subsequent application starts or views of user-installed packages load data from this cache, resulting in near-instantaneous display after the initial fetch.
+    *   A `force_refresh` option allows bypassing the cache when needed (e.g., via the "Refresh Current View" button).
+*   **Switched to `rpm` for Faster Queries:**
+    *   Dependency resolution for user-installed packages now uses `rpm -qR <package_name>` instead of `dnf repoquery --requires`. This directly queries the local RPM database and is significantly faster for installed packages.
+    *   Listing all installed packages (flat list) now uses `rpm -qa --qf '%{NAME}\n'`, which is more performant than the previous `dnf repoquery --installed`.
+*   **Introduced Controlled Concurrency for Backend Tasks:**
+    *   A semaphore (`tokio::sync::Semaphore`) is used in the Rust backend to limit the number of concurrent `rpm -qR` processes (e.g., to 5). This prevents the application from overwhelming the system with too many simultaneous processes, which previously led to memory exhaustion and crashes.
+*   **Improved Package Name Extraction for `rpm` Output:**
+    *   The `extract_base_package_name` helper function was enhanced to better parse various output formats from `rpm -qR`, including file paths and complex capability strings, providing more consistent display names.
+*   **Frontend Integration for Cache Control:**
+    *   The Svelte frontend now passes a `forceRefresh` parameter to the backend, enabling the "Refresh Current View" button to trigger a full data refresh and cache update.
+*   **Build System and Dependency Management:**
+    *   Added `tokio` as a dependency in `Cargo.toml` to support asynchronous operations and the semaphore.
+    *   Resolved various compilation errors related to missing dependencies, type annotations, and function definitions during the refactoring process.
 
 ### `nebula-dnf` - Recent Major Updates (October 2023)
 
