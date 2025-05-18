@@ -84,3 +84,43 @@ These changes significantly improved performance and data consistency for the `n
     *   Resolved various build issues, including port conflicts (requiring process termination) and corrupted Rust build artifacts (requiring `cargo clean`).
 *   **Frontend Adaptations:**
     *   The Svelte frontend (`+page.svelte`) was updated to correctly work with the data structures returned by the refactored backend commands, ensuring the dependency toggling feature remains functional and accurate.
+
+## Roadmap
+
+This section outlines the planned development path for NebulaSys, focusing on the `nebula-dnf` module initially.
+
+### `nebula-dnf` Module
+
+#### Completed
+
+*   **Phase 1: Core Functionality & Performance Overhaul** (October - November 2023)
+    *   Established basic listing of user-installed and all installed packages.
+    *   Implemented dependency viewing for user-installed packages.
+    *   Significantly optimized backend performance by:
+        *   Switching from `dnf repoquery` to direct `rpm` calls for faster data retrieval.
+        *   Implementing backend caching (`package_cache.json`) for near-instantaneous loads after the first fetch.
+        *   Introducing controlled concurrency for `rpm` calls to prevent system overload.
+        *   Optimizing regex handling.
+    *   Refined package name extraction for consistency.
+*   **Phase 2: UI/UX Enhancement (Nebula Theme)**
+    *   Implemented a modern, space-themed UI ("Nebula") for `nebula-dnf` for a visually engaging experience.
+    *   Redesigned layout, buttons, lists, and typography with a dark theme and vibrant accents using Svelte.
+    *   Replaced inline styles with a global stylesheet and CSS variables for better maintainability.
+    *   Enhanced interactivity with hover effects and clear visual states for UI elements.
+
+#### Next Steps
+
+*   **Phase 3: Interactive Package Management & Advanced Features**
+    *   **Search Functionality:** Implement a search bar within `nebula-dnf` to quickly find packages within the displayed lists (both user-installed and all packages).
+    *   **Package Management Operations:** 
+        *   Introduce functionality to update selected packages.
+        *   Introduce functionality to remove (delete) selected packages.
+        *   Ensure appropriate user confirmations and robust error handling for these operations.
+    *   **Advanced Sorting/Filtering for User Packages:**
+        *   Develop a mechanism to differentiate between packages installed as part of the initial desktop environment/OS setup and those installed manually by the user post-setup.
+        *   Allow sorting or filtering based on this distinction to give users a clearer view of their own additions.
+
+*   **Phase 4: Broader NebulaSys Vision (Potential)**
+    *   Exploration of UI components for other package managers.
+    *   Unified dashboard concepts.
+    *   Configuration and settings management for NebulaSys.
