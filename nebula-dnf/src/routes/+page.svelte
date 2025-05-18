@@ -21,23 +21,42 @@
   /** @type {'all' | 'user'} */
   let packageViewMode = 'user'; // Default to user-installed packages
 
+  /** @type {Map<'all' | 'user', (UserPackageWithDependencies[] | DisplayablePackage[])>} */
+  let packageCache = new Map();
+
   /** @param {'all' | 'user'} mode */
-  async function fetchPackages(mode) {
+  async function fetchPackages(mode, forceRefresh = false) {
     isLoading = true;
     errorMessage = '';
-    packages = []; 
+    // packages = []; // Clear only if we are actually fetching
+
+    if (!forceRefresh && packageCache.has(mode)) {
+      const cachedPackages = packageCache.get(mode);
+      if (cachedPackages) {
+        packages = cachedPackages;
+        isLoading = false;
+        console.log(`Loaded ${mode} packages from cache.`);
+        return;
+      }
+    }
+    
+    console.log(`Fetching ${mode} packages from backend...`);
+    packages = []; // Clear previous packages before new fetch
+
     try {
       let result;
       if (mode === 'user') {
-        result = await invoke('list_user_installed_packages');
-        // Initialize showDependencies state for user packages
-        packages = (/** @type {UserPackageWithDependencies[]} */ (result)).map(pkg => ({ 
+        result = await invoke('list_user_installed_packages', { forceRefresh });
+        const userPackages = (/** @type {UserPackageWithDependencies[]} */ (result)).map(pkg => ({ 
           ...pkg, 
           showDependencies: false 
         }));
+        packages = userPackages;
+        packageCache.set(mode, userPackages);
       } else {
         result = await invoke('list_installed_packages');
         packages = result; // This will be DisplayablePackage[]
+        packageCache.set(mode, result);
       }
     } catch (error) {
       console.error(`Error loading ${mode} packages:`, error);
@@ -49,7 +68,12 @@
   /** @param {'all' | 'user'} mode */
   function setViewMode(mode) {
     packageViewMode = mode;
-    fetchPackages(mode);
+    fetchPackages(mode); // Will use cache by default
+  }
+
+  function refreshCurrentView() {
+    console.log('Forcing refresh for current view:', packageViewMode);
+    fetchPackages(packageViewMode, true); // Pass true to force refresh
   }
 
   /** @param {string} packageName // Pass name to identify package to toggle */
@@ -78,6 +102,9 @@
     </button>
     <button on:click={() => setViewMode('all')} disabled={isLoading || packageViewMode === 'all'} style="margin-left: 10px;">
       Show All Installed (Flat List)
+    </button>
+    <button on:click={refreshCurrentView} disabled={isLoading} style="margin-left: 10px;">
+      Refresh Current View
     </button>
   </div>
 
