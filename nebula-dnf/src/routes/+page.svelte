@@ -1,156 +1,128 @@
 <script>
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from '@tauri-apps/api/core';
+  import { onMount } from 'svelte';
 
-  let name = $state("");
-  let greetMsg = $state("");
+  /**
+   * @typedef {Object} DisplayablePackage // Renamed from PackageInfo
+   * @property {string} name
+   */
 
-  async function greet(event) {
-    event.preventDefault();
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsg = await invoke("greet", { name });
+  /**
+   * @typedef {Object} UserPackageWithDependencies
+   * @property {string} name
+   * @property {DisplayablePackage[]} dependencies
+   * @property {boolean} [showDependencies] // For UI state, make it optional for initial type
+   */
+
+  /** @type {(UserPackageWithDependencies[] | DisplayablePackage[])} */
+  let packages = [];
+  let errorMessage = '';
+  let isLoading = true;
+  /** @type {'all' | 'user'} */
+  let packageViewMode = 'user'; // Default to user-installed packages
+
+  /** @param {'all' | 'user'} mode */
+  async function fetchPackages(mode) {
+    isLoading = true;
+    errorMessage = '';
+    packages = []; 
+    try {
+      let result;
+      if (mode === 'user') {
+        result = await invoke('list_user_installed_packages');
+        // Initialize showDependencies state for user packages
+        packages = (/** @type {UserPackageWithDependencies[]} */ (result)).map(pkg => ({ 
+          ...pkg, 
+          showDependencies: false 
+        }));
+      } else {
+        result = await invoke('list_installed_packages');
+        packages = result; // This will be DisplayablePackage[]
+      }
+    } catch (error) {
+      console.error(`Error loading ${mode} packages:`, error);
+      errorMessage = String(error);
+    }
+    isLoading = false;
   }
+
+  /** @param {'all' | 'user'} mode */
+  function setViewMode(mode) {
+    packageViewMode = mode;
+    fetchPackages(mode);
+  }
+
+  /** @param {string} packageName // Pass name to identify package to toggle */
+  function toggleDependencies(packageName) {
+    packages = packages.map(pkg => {
+      // Check if the package is a UserPackageWithDependencies and matches the name
+      if ('dependencies' in pkg && pkg.name === packageName) {
+        const userPkg = /** @type {UserPackageWithDependencies} */ (pkg);
+        return { ...userPkg, showDependencies: !userPkg.showDependencies };
+      }
+      return pkg;
+    });
+}
+
+  onMount(() => {
+    fetchPackages(packageViewMode);
+  });
 </script>
 
-<main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
+<div style="padding: 20px; font-family: sans-serif;">
+  <h1>DNF Package Manager</h1>
 
-  <div class="row">
-    <a href="https://vitejs.dev" target="_blank">
-      <img src="/vite.svg" class="logo vite" alt="Vite Logo" />
-    </a>
-    <a href="https://tauri.app" target="_blank">
-      <img src="/tauri.svg" class="logo tauri" alt="Tauri Logo" />
-    </a>
-    <a href="https://kit.svelte.dev" target="_blank">
-      <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
-    </a>
+  <div style="margin-bottom: 15px;">
+    <button on:click={() => setViewMode('user')} disabled={isLoading || packageViewMode === 'user'}>
+      Show User Installed (with Dependencies)
+    </button>
+    <button on:click={() => setViewMode('all')} disabled={isLoading || packageViewMode === 'all'} style="margin-left: 10px;">
+      Show All Installed (Flat List)
+    </button>
   </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
 
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{greetMsg}</p>
-</main>
+  {#if errorMessage}
+    <p style="color: red;">Error: {errorMessage}</p>
+  {/if}
 
-<style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
+  {#if isLoading}
+    <p>Loading {packageViewMode === 'user' ? 'user installed' : 'all'} packages...</p>
+  {:else if packages.length > 0}
+    <h2>
+      {packageViewMode === 'user' ? 'User Installed' : 'All Installed'} Packages ({packages.length}):
+    </h2>
+    <ul style="list-style-type: none; padding-left: 0;">
+      {#each packages as pkg (pkg.name)} 
+        {#if packageViewMode === 'user'}
+          {@const userPkg = /** @type {UserPackageWithDependencies} */ (pkg)}
+          <li style="margin-bottom: 5px; border: 1px solid #eee; padding: 5px; border-radius: 4px;">
+            <div style="cursor: pointer; padding: 4px; background-color: #f9f9f9; border-radius: 3px;" on:click={() => toggleDependencies(userPkg.name)} role="button" tabindex="0" on:keydown={(e) => e.key === 'Enter' && toggleDependencies(userPkg.name)}>
+              <strong>{userPkg.name}</strong> 
+              <span style="font-size: 0.9em; color: #555;">
+                ({userPkg.showDependencies ? 'Hide' : 'Show'} {userPkg.dependencies.length} Dependencies)
+              </span>
+            </div>
+            {#if userPkg.showDependencies && userPkg.dependencies.length > 0}
+              <ul style="margin-top: 8px; padding-left: 25px; list-style-type: disc; background-color: #fff; border-top: 1px dashed #ddd; padding-top: 5px;">
+                {#each userPkg.dependencies as dep (dep.name)}
+                  <li style="padding: 1px 0;">{dep.name}</li>
+                {/each}
+              </ul>
+            {:else if userPkg.showDependencies && userPkg.dependencies.length === 0}
+               <p style="padding-left: 25px; font-style: italic; margin-top: 5px; color: #777;">No dependencies listed for this package.</p>
+            {/if}
+          </li>
+        {:else}
+          {@const displayPkg = /** @type {DisplayablePackage} */ (pkg)}
+          <li style="padding: 4px 2px; border-bottom: 1px dotted #eee;">{displayPkg.name}</li>
+        {/if}
+      {/each}
+    </ul>
+  {:else if !errorMessage}
+    <p>No {packageViewMode === 'user' ? 'user installed' : 'all'} packages found.</p>
+  {/if}
+</div>
 
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
-}
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
-
-  a:hover {
-    color: #24c8db;
-  }
-
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
-  }
-  button:active {
-    background-color: #0f0f0f69;
-  }
-}
-
-</style>
+<svelte:head>
+  <title>Nebula DNF Manager</title>
+</svelte:head>

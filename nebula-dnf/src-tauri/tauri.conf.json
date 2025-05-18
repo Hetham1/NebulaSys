@@ -5,7 +5,7 @@
   "identifier": "com.nebula-dnf.app",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../build"
   },
@@ -18,7 +18,25 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "capabilities": [
+        {
+          "identifier": "main-window-shell-access",
+          "windows": ["main"],
+          "permissions": [
+            {
+              "identifier": "shell:allow-execute",
+              "scope": [
+                {
+                  "name": "run-dnf",
+                  "command": "dnf",
+                  "args": true
+                }
+              ]
+            }
+          ]
+        }
+      ]
     }
   },
   "bundle": {

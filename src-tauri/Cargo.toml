@@ -1,0 +1,6 @@
+[dependencies]
+tauri = { version = "^2.0.0-beta", features = ["app", "plugin", "tray-icon", "global-shortcut", "clipboard-all", "dialog", "fs-all", "http-all", "notification", "os-all", "process-command", "path-all", "window-all", "webview-Zoom", "webview-print", "webview-set-title"] }
+tauri-plugin-shell = "2.0.0-beta.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+window-shadows = "0.2.1" 
