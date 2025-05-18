@@ -93,63 +93,237 @@
   });
 </script>
 
-<div style="padding: 20px; font-family: sans-serif;">
-  <h1>DNF Package Manager</h1>
+<style>
+  :root {
+    --nebula-bg: linear-gradient(145deg, #101028, #281838);
+    --nebula-surface: #1a1a3a;
+    --nebula-surface-light: #2c2c4f;
+    --nebula-text-primary: #e0e0ff;
+    --nebula-text-secondary: #a0a0cc;
+    --nebula-accent: #ff00aa; /* Vibrant magenta */
+    --nebula-accent-hover: #ff40bf;
+    --nebula-border: #3c3c6c;
+    --nebula-green-glow: #00ffaa;
+    --nebula-red-glow: #ff5555;
+    --font-main: 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+  }
 
-  <div style="margin-bottom: 15px;">
+  .nebula-container {
+    min-height: 100vh;
+    background: var(--nebula-bg);
+    color: var(--nebula-text-primary);
+    font-family: var(--font-main);
+    padding: 25px;
+    box-sizing: border-box;
+  }
+
+  h1 {
+    text-align: center;
+    font-size: 2.8em;
+    margin-bottom: 30px;
+    color: var(--nebula-text-primary);
+    text-shadow: 0 0 10px var(--nebula-accent), 0 0 20px var(--nebula-accent);
+  }
+
+  h2 {
+    color: var(--nebula-text-secondary);
+    border-bottom: 1px solid var(--nebula-border);
+    padding-bottom: 10px;
+    margin-top: 30px;
+    font-size: 1.6em;
+  }
+
+  .button-group {
+    display: flex;
+    justify-content: center;
+    gap: 15px;
+    margin-bottom: 30px;
+  }
+
+  button {
+    background-color: var(--nebula-accent);
+    color: var(--nebula-text-primary);
+    border: none;
+    padding: 12px 22px;
+    border-radius: 25px;
+    cursor: pointer;
+    font-size: 1em;
+    font-weight: bold;
+    transition: background-color 0.3s ease, transform 0.2s ease, box-shadow 0.3s ease;
+    box-shadow: 0 0 8px transparent;
+  }
+
+  button:hover:not(:disabled) {
+    background-color: var(--nebula-accent-hover);
+    transform: translateY(-2px);
+    box-shadow: 0 0 15px var(--nebula-accent-hover);
+  }
+
+  button:disabled {
+    background-color: var(--nebula-border);
+    color: var(--nebula-text-secondary);
+    cursor: not-allowed;
+    opacity: 0.7;
+  }
+
+  .loading-message,
+  .no-packages-message {
+    text-align: center;
+    font-size: 1.2em;
+    color: var(--nebula-text-secondary);
+    margin-top: 40px;
+    padding: 20px;
+    background-color: var(--nebula-surface);
+    border-radius: 8px;
+    border: 1px solid var(--nebula-border);
+  }
+
+  .error-message {
+    text-align: center;
+    font-size: 1.1em;
+    color: var(--nebula-red-glow);
+    margin-top: 20px;
+    padding: 15px;
+    background-color: rgba(255, 85, 85, 0.1);
+    border: 1px solid var(--nebula-red-glow);
+    border-radius: 8px;
+  }
+
+  .packages-list {
+    list-style-type: none;
+    padding-left: 0;
+  }
+
+  .package-item,
+  .package-item-flat {
+    background-color: var(--nebula-surface);
+    margin-bottom: 10px;
+    border: 1px solid var(--nebula-border);
+    border-radius: 8px;
+    padding: 15px;
+    transition: box-shadow 0.3s ease, transform 0.2s ease;
+  }
+  
+  .package-item:hover {
+      box-shadow: 0 0 10px var(--nebula-accent);
+      /* transform: scale(1.01); */
+  }
+
+  .package-header {
+    cursor: pointer;
+    padding: 8px 0;
+    /* background-color: var(--nebula-surface-light); */
+    border-radius: 5px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .package-header strong {
+    font-size: 1.2em;
+    color: var(--nebula-text-primary);
+  }
+
+  .package-header .dep-count {
+    font-size: 0.9em;
+    color: var(--nebula-accent);
+    background-color: rgba(255, 0, 170, 0.1);
+    padding: 3px 8px;
+    border-radius: 10px;
+  }
+
+  .dependencies-list {
+    margin-top: 12px;
+    padding-left: 30px;
+    list-style-type: none; /* Using custom bullets */
+    /* background-color: var(--nebula-surface-light); */
+    border-top: 1px dashed var(--nebula-border);
+    padding-top: 12px;
+  }
+
+  .dependencies-list li {
+    padding: 4px 0;
+    color: var(--nebula-text-secondary);
+    position: relative;
+  }
+  .dependencies-list li::before {
+    content: '◆'; /* Diamond bullet */
+    color: var(--nebula-green-glow);
+    position: absolute;
+    left: -20px;
+    font-size: 0.8em;
+  }
+
+  .no-deps-message {
+    padding-left: 30px;
+    font-style: italic;
+    margin-top: 10px;
+    color: var(--nebula-text-secondary);
+  }
+
+  .package-item-flat {
+    padding: 10px 15px;
+    color: var(--nebula-text-secondary);
+  }
+</style>
+
+<div class="nebula-container">
+  <h1>Nebula DNF Explorer</h1>
+
+  <div class="button-group">
     <button on:click={() => setViewMode('user')} disabled={isLoading || packageViewMode === 'user'}>
-      Show User Installed (with Dependencies)
+      User Packages
     </button>
-    <button on:click={() => setViewMode('all')} disabled={isLoading || packageViewMode === 'all'} style="margin-left: 10px;">
-      Show All Installed (Flat List)
+    <button on:click={() => setViewMode('all')} disabled={isLoading || packageViewMode === 'all'}>
+      All Packages
     </button>
-    <button on:click={refreshCurrentView} disabled={isLoading} style="margin-left: 10px;">
-      Refresh Current View
+    <button on:click={refreshCurrentView} disabled={isLoading}>
+      Refresh View
     </button>
   </div>
 
   {#if errorMessage}
-    <p style="color: red;">Error: {errorMessage}</p>
+    <p class="error-message">Error: {errorMessage}</p>
   {/if}
 
   {#if isLoading}
-    <p>Loading {packageViewMode === 'user' ? 'user installed' : 'all'} packages...</p>
+    <p class="loading-message">Summoning data from the DNF void for {packageViewMode === 'user' ? 'user installed' : 'all'} packages...</p>
   {:else if packages.length > 0}
     <h2>
       {packageViewMode === 'user' ? 'User Installed' : 'All Installed'} Packages ({packages.length}):
     </h2>
-    <ul style="list-style-type: none; padding-left: 0;">
+    <ul class="packages-list">
       {#each packages as pkg (pkg.name)} 
         {#if packageViewMode === 'user'}
           {@const userPkg = /** @type {UserPackageWithDependencies} */ (pkg)}
-          <li style="margin-bottom: 5px; border: 1px solid #eee; padding: 5px; border-radius: 4px;">
-            <div style="cursor: pointer; padding: 4px; background-color: #f9f9f9; border-radius: 3px;" on:click={() => toggleDependencies(userPkg.name)} role="button" tabindex="0" on:keydown={(e) => e.key === 'Enter' && toggleDependencies(userPkg.name)}>
+          <li class="package-item">
+            <div class="package-header" on:click={() => toggleDependencies(userPkg.name)} role="button" tabindex="0" on:keydown={(e) => e.key === 'Enter' && toggleDependencies(userPkg.name)}>
               <strong>{userPkg.name}</strong> 
-              <span style="font-size: 0.9em; color: #555;">
-                ({userPkg.showDependencies ? 'Hide' : 'Show'} {userPkg.dependencies.length} Dependencies)
+              <span class="dep-count">
+                {userPkg.showDependencies ? 'Hide' : 'Show'} {userPkg.dependencies.length} Dependencies
               </span>
             </div>
             {#if userPkg.showDependencies && userPkg.dependencies.length > 0}
-              <ul style="margin-top: 8px; padding-left: 25px; list-style-type: disc; background-color: #fff; border-top: 1px dashed #ddd; padding-top: 5px;">
+              <ul class="dependencies-list">
                 {#each userPkg.dependencies as dep (dep.name)}
-                  <li style="padding: 1px 0;">{dep.name}</li>
+                  <li>{dep.name}</li>
                 {/each}
               </ul>
             {:else if userPkg.showDependencies && userPkg.dependencies.length === 0}
-               <p style="padding-left: 25px; font-style: italic; margin-top: 5px; color: #777;">No dependencies listed for this package.</p>
+               <p class="no-deps-message">No known dependencies in this dimension.</p>
             {/if}
           </li>
         {:else}
           {@const displayPkg = /** @type {DisplayablePackage} */ (pkg)}
-          <li style="padding: 4px 2px; border-bottom: 1px dotted #eee;">{displayPkg.name}</li>
+          <li class="package-item-flat">{displayPkg.name}</li>
         {/if}
       {/each}
     </ul>
   {:else if !errorMessage}
-    <p>No {packageViewMode === 'user' ? 'user installed' : 'all'} packages found.</p>
+    <p class="no-packages-message">The DNF void seems empty for {packageViewMode === 'user' ? 'user installed' : 'all'} packages.</p>
   {/if}
 </div>
 
 <svelte:head>
-  <title>Nebula DNF Manager</title>
+  <title>Nebula DNF Explorer</title>
 </svelte:head>
