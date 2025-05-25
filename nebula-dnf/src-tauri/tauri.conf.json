@@ -28,9 +28,40 @@
               "identifier": "shell:allow-execute",
               "scope": [
                 {
-                  "name": "run-dnf",
-                  "command": "dnf",
-                  "args": true
+                  "name": "run-privileged-dnf",
+                  "command": "pkexec",
+                  "args": [
+                    {
+                      "value": "dnf",
+                      "validator": "^dnf$"
+                    },
+                    { "validator": ".*" }
+                  ],
+                  "sidecar": false
+                },
+                {
+                  "name": "run-privileged-rpm",
+                  "command": "pkexec",
+                  "args": [
+                    {
+                      "value": "rpm",
+                      "validator": "^rpm$"
+                    },
+                    { "validator": ".*" }
+                  ],
+                  "sidecar": false
+                },
+                {
+                  "name": "run-rpm-qa",
+                  "command": "rpm",
+                  "args": ["-qa"],
+                  "sidecar": false
+                },
+                {
+                  "name": "run-rpm-queries",
+                  "command": "rpm",
+                  "args": ["-q", { "validator": ".*" }],
+                  "sidecar": false
                 }
               ]
             }

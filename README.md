@@ -85,6 +85,20 @@ These changes significantly improved performance and data consistency for the `n
 *   **Frontend Adaptations:**
     *   The Svelte frontend (`+page.svelte`) was updated to correctly work with the data structures returned by the refactored backend commands, ensuring the dependency toggling feature remains functional and accurate.
 
+## Changelog (Nebula DNF Explorer)
+
+### [Current Date] - Performance Optimizations & Uninstall UI Enhancements
+*   **Performance Boost for User Package Loading:**
+    *   Significantly improved the speed of loading user-installed packages.
+    *   The initial list of user packages is fetched efficiently using `dnf repoquery --userinstalled --quiet --latest-limit=1`.
+    *   Details for each package (category via `rpm -q --qf "%{GROUP}"` and dependencies via `rpm -qR`) are now fetched concurrently (up to 5 `rpm` processes in parallel) in the Rust backend. This greatly reduces the waiting time compared to previous sequential fetching methods.
+    *   Implemented a caching mechanism (`package_cache.json`) for user-installed package data. Subsequent loads (unless a force refresh is triggered) are now much faster as they read from the cache.
+*   **Advanced Uninstall Modal:**
+    *   Integrated a new modal for package uninstallation, offering "Safe" (`dnf remove`) and "Force" (`rpm -e --nodeps`) modes.
+    *   Includes a dry-run option for both modes to preview changes.
+    *   "Safe" mode offers an option to clean up orphan dependencies (`dnf autoremove`).
+    *   The modal provides detailed feedback on the operation status and any output from the commands.
+
 ## Roadmap
 
 This section outlines the planned development path for NebulaSys, focusing on the `nebula-dnf` module initially.
