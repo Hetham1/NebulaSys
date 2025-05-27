@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { onMount, onDestroy } from 'svelte';
   import UninstallModal from './UninstallModal.svelte'; // Import the modal
+  import '../theme.css'; // Import the new theme CSS
 
   /** @type {Record<string, string>} */
   const PackageCategory = {
@@ -315,496 +316,155 @@
   onDestroy(() => {
     activeOperationCount = 0; 
   });
+
+  /** @param {string} packageName */
+  function showDetails(packageName) {
+    const status = packageOpStatus[packageName];
+    if (status && status.details) {
+      // For simplicity, using alert. In a real app, use a modal or a dedicated area.
+      alert(`Details for ${packageName}:\n\n${status.details}`);
+    } else {
+      alert(`No details available for ${packageName}.`);
+    }
+  }
 </script>
 
-<style>
-  :root {
-    --nebula-bg: linear-gradient(145deg, #101028, #281838);
-    --nebula-surface: #1a1a3a;
-    --nebula-surface-light: #2c2c4f;
-    --nebula-text-primary: #e0e0ff;
-    --nebula-text-secondary: #a0a0cc;
-    --nebula-accent: #ff00aa; /* Vibrant magenta */
-    --nebula-accent-hover: #ff40bf;
-    --nebula-border: #3c3c6c;
-    --nebula-green-glow: #00ffaa;
-    --nebula-red-glow: #ff5555;
-    --font-main: 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
-  }
+<svelte:head>
+  <title>NebulaSys - Package Manager</title>
+</svelte:head>
 
-  .nebula-container {
-    min-height: 100vh;
-    background: var(--nebula-bg);
-    color: var(--nebula-text-primary);
-    font-family: var(--font-main);
-    padding: 25px;
-    box-sizing: border-box;
-  }
+<div class="container">
+  <header class="app-header">
+    <h1>NebulaSys Package Manager</h1>
+  </header>
 
-  h1 {
-    text-align: center;
-    font-size: 2.8em;
-    margin-bottom: 30px;
-    color: var(--nebula-text-primary);
-    text-shadow: 0 0 10px var(--nebula-accent), 0 0 20px var(--nebula-accent);
-  }
-
-  h2 {
-    color: var(--nebula-text-secondary);
-    border-bottom: 1px solid var(--nebula-border);
-    padding-bottom: 10px;
-    margin-top: 30px;
-    font-size: 1.6em;
-  }
-
-  .button-group {
-  display: flex;
-  justify-content: center;
-    gap: 15px;
-    margin-bottom: 30px;
-  }
-
-  button {
-    background-color: var(--nebula-accent);
-    color: var(--nebula-text-primary);
-    border: none;
-    padding: 12px 22px;
-    border-radius: 25px;
-    cursor: pointer;
-    font-size: 1em;
-    font-weight: bold;
-    transition: background-color 0.3s ease, transform 0.2s ease, box-shadow 0.3s ease;
-    box-shadow: 0 0 8px transparent;
-  }
-
-  button:hover:not(:disabled) {
-    background-color: var(--nebula-accent-hover);
-    transform: translateY(-2px);
-    box-shadow: 0 0 15px var(--nebula-accent-hover);
-  }
-
-  button:disabled {
-    background-color: var(--nebula-border);
-    color: var(--nebula-text-secondary);
-    cursor: not-allowed;
-    opacity: 0.7;
-  }
-
-  .filter-controls-container {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 20px;
-    margin-bottom: 25px;
-  }
-
-  .search-container {
-    flex-grow: 1;
-    margin-bottom: 0;
-    display: flex; /* Added to center the search input */
-    justify-content: flex-start; /* Aligns search input to the left within its flexible space */
-    /* If you prefer the search input itself to be centered when it's narrower than its container: */
-    /* justify-content: center; */ 
-  }
-
-  .search-input {
-    width: 100%; 
-    max-width: 500px; /* It will not exceed this width */
-  }
-  
-  .category-filter-container {
-  display: flex;
-    align-items: center;
-    gap: 8px;
-    /* flex-shrink: 0; /* Prevent dropdown from shrinking too much */
-  }
-
-  .category-filter-container label {
-    color: var(--nebula-text-secondary);
-    font-size: 0.9em;
-    white-space: nowrap; /* Prevent label from wrapping */
-  }
-
-  .category-select-wrapper {
-    position: relative;
-    display: inline-block;
-  }
-
-  .category-select {
-    padding: 10px 35px 10px 15px; /* Adjusted padding for custom arrow */
-    background-color: var(--nebula-surface);
-    color: var(--nebula-text-primary);
-    border: 1px solid var(--nebula-border);
-    border-radius: 20px;
-    font-size: 0.9em;
-    min-width: 220px; /* Give it some base width */
-    transition: border-color 0.3s ease, box-shadow 0.3s ease;
-    appearance: none; /* Remove default arrow */
-    -webkit-appearance: none;
-    -moz-appearance: none;
-    cursor: pointer;
-  }
-  .category-select-wrapper::after { /* Custom arrow */
-    content: '';
-    position: absolute;
-    top: 50%;
-    right: 15px;
-    transform: translateY(-50%) rotate(45deg);
-    width: 7px;
-    height: 7px;
-    border-bottom: 2px solid var(--nebula-accent);
-    border-right: 2px solid var(--nebula-accent);
-    pointer-events: none; /* So it doesn't interfere with select click */
-    transition: border-color 0.3s ease;
-  }
-  .category-select-wrapper:hover::after {
-      border-color: var(--nebula-accent-hover);
-  }
-
-  .category-select:focus {
-    outline: none;
-    border-color: var(--nebula-accent);
-    box-shadow: 0 0 8px var(--nebula-accent);
-  }
-
-  .package-category-badge {
-    font-size: 0.75em;
-    padding: 3px 8px;
-    border-radius: 10px;
-    background-color: var(--nebula-surface-light); /* Default */
-    color: var(--nebula-text-secondary); /* Default */
-    margin-left: 10px;
-    border: 1px solid var(--nebula-border); /* Default */
-    /* text-transform: capitalize; Replaced by helper function for better formatting */
-    display: inline-block; /* Ensures proper spacing and layout */
-    vertical-align: middle;
-  }
-  /* Style for specific categories for more visual distinction */
-  .category-badge-Manual { background-color: #3a5fcd; color: white; } /* Medium Blue */
-  .category-badge-DesktopEnvironment { background-color: #cd5c5c; color: white; } /* Indian Red */
-  .category-badge-System { background-color: #6a6a6a; color: white; } /* Dim Gray */
-  .category-badge-Library { background-color: #487f48; color: white; } /* Dark Green */
-  .category-badge-Development { background-color: #b8860b; color: white; } /* DarkGoldenRod */
-  .category-badge-Multimedia { background-color: #9370db; color: white; } /* MediumPurple */
-  .category-badge-Office { background-color: #ff8c00; color: white; } /* DarkOrange */
-  .category-badge-Games { background-color: #ff1493; color: white; } /* DeepPink */
-  .category-badge-Utility { background-color: #00ced1; color: black; } /* DarkTurquoise */
-  .category-badge-Network { background-color: #1e90ff; color: white; } /* DodgerBlue */
-  .category-badge-Security { background-color: #dc143c; color: white; } /* Crimson */
-  .category-badge-OtherApplication { background-color: #da70d6; color: white; } /* Orchid */
-  .category-badge-Unknown { background-color: #778899; color: white; } /* LightSlateGray */
-
-  .loading-message,
-  .no-packages-message {
-    text-align: center;
-    font-size: 1.2em;
-    color: var(--nebula-text-secondary);
-    margin-top: 40px;
-    padding: 20px;
-    background-color: var(--nebula-surface);
-    border-radius: 8px;
-    border: 1px solid var(--nebula-border);
-  }
-
-  .error-message {
-  text-align: center;
-    font-size: 1.1em;
-    color: var(--nebula-red-glow);
-    margin-top: 20px;
-    padding: 15px;
-    background-color: rgba(255, 85, 85, 0.1);
-    border: 1px solid var(--nebula-red-glow);
-    border-radius: 8px;
-  }
-
-  .packages-list {
-    list-style-type: none;
-    padding-left: 0;
-  }
-
-  .package-item,
-  .package-item-flat {
-    background-color: var(--nebula-surface);
-    margin-bottom: 10px;
-    border: 1px solid var(--nebula-border);
-  border-radius: 8px;
-    padding: 15px;
-    transition: box-shadow 0.3s ease, transform 0.2s ease;
-  }
-  
-  .package-item:hover {
-      box-shadow: 0 0 10px var(--nebula-accent);
-  }
-
-  .package-header {
-  cursor: pointer;
-    padding: 8px 0;
-    border-radius: 5px;
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start; /* Align items to top if actions wrap */
-  }
-
-  .package-header strong {
-    font-size: 1.2em;
-    color: var(--nebula-text-primary);
-  }
-
-  .package-header .dep-count {
-    font-size: 0.9em;
-    color: var(--nebula-accent);
-    background-color: rgba(255, 0, 170, 0.1);
-    padding: 3px 8px;
-    border-radius: 10px;
-  }
-
-  .dependencies-list {
-    margin-top: 12px;
-    padding-left: 30px;
-    list-style-type: none; 
-    border-top: 1px dashed var(--nebula-border);
-    padding-top: 12px;
-  }
-
-  .dependencies-list li {
-    padding: 4px 0;
-    color: var(--nebula-text-secondary);
-    position: relative;
-  }
-  .dependencies-list li::before {
-    content: '◆'; 
-    color: var(--nebula-green-glow);
-    position: absolute;
-    left: -20px;
-    font-size: 0.8em;
-  }
-
-  .no-deps-message {
-    padding-left: 30px;
-    font-style: italic;
-    margin-top: 10px;
-    color: var(--nebula-text-secondary);
-  }
-
-  .package-item-flat {
-    padding: 10px 15px;
-    color: var(--nebula-text-secondary);
-  }
-
-  .package-actions button {
-    padding: 5px 10px;
-    font-size: 0.8em;
-    margin-left: 8px;
-    border-radius: 15px;
-    /* Use existing button vars or define new ones for smaller actions */
-  }
-
-  .package-actions .update-btn {
-    background-color: var(--nebula-green-glow); /* Or a blue similar to accent */
-    color: #002b00; /* Dark green text */
-  }
-  .package-actions .update-btn:hover {
-    background-color: #33ffbb;
-    box-shadow: 0 0 10px #33ffbb;
-  }
-
-  .package-actions .remove-btn {
-    background-color: var(--nebula-red-glow);
-    color: #330000; /* Dark red text */
-  }
-  .package-actions .remove-btn:hover {
-    background-color: #ff7777;
-    box-shadow: 0 0 10px #ff7777;
-  }
-  .package-actions button:disabled {
-    background-color: var(--nebula-border);
-    color: var(--nebula-text-secondary);
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .package-op-status {
-    font-size: 0.8em;
-    margin-top: 5px;
-    padding: 5px;
-    border-radius: 4px;
-    word-break: break-all; /* For long error messages */
-  }
-  .package-op-status.loading {
-    color: var(--nebula-accent);
-    background-color: rgba(255,0,170,0.1);
-  }
-  .package-op-status.success {
-    color: var(--nebula-green-glow);
-    background-color: rgba(0,255,170,0.1);
-  }
-  .package-op-status.error {
-    color: var(--nebula-red-glow);
-    background-color: rgba(255,85,85,0.1);
-  }
-
-  .package-info {
-    flex-grow: 1; /* Allow package name and badge to take space */
-  }
-
-  .package-controls {
-    display: flex; /* For header content */
-    justify-content: space-between;
-    align-items: center; /* Vertically center name/badge with dep count */
-    width: 100%;
-  }
-</style>
-
-<UninstallModal 
-  bind:isOpen={isUninstallModalOpen} 
-  packageName={packageForUninstall}
-  on:close={() => { isUninstallModalOpen = false; packageForUninstall = ''; }}
-  on:uninstallCompleted={handleUninstallCompleted}
-/>
-
-<div class="nebula-container">
-  <h1>Nebula DNF Explorer</h1>
-
-  <div class="button-group">
-    <button on:click={() => setViewMode('user')} disabled={isLoading || packageViewMode === 'user'}>
-      User Packages
-    </button>
-    <button on:click={() => setViewMode('all')} disabled={isLoading || packageViewMode === 'all'}>
-      All Packages
-    </button>
-    <button on:click={refreshCurrentView} disabled={isLoading}>
-      Refresh View
-    </button>
-  </div>
-
-  <div class="filter-controls-container">
-    <div class="search-container">
-      <input 
-        type="text" 
-        bind:value={searchTerm} 
-        placeholder="Search packages or dependencies..." 
-        class="search-input"
-        aria-label="Search packages and dependencies"
-      />
+  {#if errorMessage}
+    <div class="error-message floating-message">
+      <p>{errorMessage}</p>
+      <button on:click={() => errorMessage = ''}>Dismiss</button>
     </div>
-
-    {#if packageViewMode === 'user'}
-      <div class="category-filter-container">
-        <label for="category-filter">Category:</label> <!-- Shortened Label -->
-        <div class="category-select-wrapper"> <!-- Wrapper for custom arrow -->
-          <select id="category-filter" bind:value={selectedCategoryFilter} class="category-select" disabled={isLoading || availableCategoriesForFilter.length <= 1}>
-            {#each availableCategoriesForFilter as category (category.key)}
-              <option value={category.value}>{formatCategoryName(category.value)}</option>
-            {/each}
-          </select>
-        </div>
-      </div>
-    {/if}
-  </div>
-
-  {#if errorMessage && activeOperationCount === 0} <!-- Only show global error if no package ops causing it -->
-    <p class="error-message" role="alert">Error: {errorMessage}</p>
   {/if}
 
-  {#if isLoading}
-    <p class="loading-message">Summoning data from the DNF void for {packageViewMode === 'user' ? 'user installed' : 'all'} packages...</p>
-  {:else if packages.length > 0 && filteredPackages.length > 0}
-    <h2>
-      {packageViewMode === 'user' ? 
-        `${formatCategoryName(selectedCategoryFilter) === PackageCategory.ALL ? 'User Installed' : formatCategoryName(selectedCategoryFilter)} Packages` : 
-        'All Installed Packages'}
-      ({filteredPackages.length}{searchTerm.trim() ? ` matching '${searchTerm}'` : ''} / {packages.length} total):
-    </h2>
-    <ul class="packages-list">
+  <div class="controls">
+    <div class="view-switcher">
+      <button 
+        class:active={packageViewMode === 'user'} 
+        on:click={() => setViewMode('user')}
+        disabled={activeOperationCount > 0}>
+        User Installed
+    </button>
+      <button 
+        class:active={packageViewMode === 'all'} 
+        on:click={() => setViewMode('all')}
+        disabled={activeOperationCount > 0}>
+      All Packages
+    </button>
+  </div>
+      <input 
+        type="text" 
+      placeholder="Search packages..." 
+        bind:value={searchTerm} 
+        class="search-input"
+      />
+    {#if packageViewMode === 'user'}
+      <select bind:value={selectedCategoryFilter} class="category-filter">
+        {#each availableCategoriesForFilter as cat (cat.value)}
+          <option value={cat.value}>{formatCategoryName(cat.value)}</option>
+            {/each}
+          </select>
+    {/if}
+    <button class="refresh-button" on:click={refreshCurrentView} disabled={activeOperationCount > 0 || isLoading}>
+      {#if isLoading && activeOperationCount === 0}
+        Loading...
+      {:else}
+        Refresh
+      {/if}
+    </button>
+  </div>
+
+  {#if isLoading && packages.length === 0}
+    <div class="loading-indicator">
+      <div class="spinner"></div>
+      <p>Loading packages...</p>
+    </div>
+  {:else if filteredPackages.length === 0 && !isLoading}
+    <div class="empty-state">
+      <p>No packages found matching your criteria.</p>
+    </div>
+  {:else}
+    <ul class="package-list">
       {#each filteredPackages as pkg (pkg.name)} 
-        {#if packageViewMode === 'user'}
+        {@const status = packageOpStatus[pkg.name]}
+        <li class="package-item" class:has-op-error={status?.isError} class:has-op-success={status && !status.isLoading && !status.isError}>
+          <div class="package-info">
+            <span class="package-name">{pkg.name}</span>
+            {#if packageViewMode === 'user' && 'category' in pkg}
           {@const userPkg = /** @type {UserPackageWithDependencies} */ (pkg)}
-          <li class="package-item">
-            <div class="package-header" 
-              on:click={(e) => {
-                  // Prevent toggling dependencies if a button inside package-actions was clicked
-                  const eventTarget = /** @type {HTMLElement} */ (e.target);
-                  if (eventTarget && eventTarget.closest('.package-actions')) return;
-                  toggleDependencies(userPkg.name);
-              }}
-              role="button" 
-              tabindex="0" 
-              on:keydown={(e) => {
-                  const eventTarget = /** @type {HTMLElement} */ (e.target);
-                  if (eventTarget && eventTarget.closest('.package-actions')) return;
-                  if (e.key === 'Enter') toggleDependencies(userPkg.name);
-              }}>
-              
-              <div class="package-controls">
-                <div class="package-info">
-                  <strong>{userPkg.name}</strong>
-                  <span class={`package-category-badge category-badge-${userPkg.category}`}>{formatCategoryName(userPkg.category)}</span>
-                </div>
-                <span class="dep-count">
-                  {userPkg.showDependencies ? 'Hide' : 'Show'} {userPkg.dependencies.length} Dependencies
-                </span>
+              <span class="package-category" title={userPkg.category}>{formatCategoryName(userPkg.category)}</span>
+            {/if}
               </div>
 
-              {#if !packageOpStatus[userPkg.name]?.isLoading && !isUninstallModalOpen}
                 <div class="package-actions">
+            {#if packageViewMode === 'user'}
+             {#if 'dependencies' in pkg}
+                {@const userPkg = /** @type {UserPackageWithDependencies} */ (pkg)}
+                {#if userPkg.dependencies && userPkg.dependencies.length > 0}
                   <button 
-                    class="update-btn"
-                    on:click|stopPropagation={() => handlePackageAction(userPkg.name, 'update')} 
-                    title={`Update ${userPkg.name}`}
-                    disabled={activeOperationCount > 0 || (packageOpStatus[userPkg.name]?.isLoading)}>
-                    Update
+                    class="action-button"
+                    on:click={() => toggleDependencies(pkg.name)}
+                    title={userPkg.showDependencies ? "Hide Dependencies" : "Show Dependencies"}>
+                    {userPkg.showDependencies ? 'Hide Deps' : 'Show Deps'} ({userPkg.dependencies.length})
+                  </button>
+                {/if}
+              {/if}
+              <button 
+                class="action-button update-button" 
+                on:click={() => handlePackageAction(pkg.name, 'update')}
+                disabled={status?.isLoading || activeOperationCount > 0}
+                title="Update this package">
+                {#if status?.isLoading && status.message.toLowerCase().includes('updat')}Updating...{:else}Update{/if}
                   </button>
                   <button 
-                    class="remove-btn"
-                    on:click|stopPropagation={() => openUninstallModal(userPkg.name)} 
-                    title={`Remove ${userPkg.name}`}
-                    disabled={activeOperationCount > 0 || (packageOpStatus[userPkg.name]?.isLoading)}>
-                    Remove...
+                class="action-button uninstall-button" 
+                on:click={() => openUninstallModal(pkg.name)}
+                disabled={status?.isLoading || activeOperationCount > 0}
+                title="Uninstall this package">
+                {#if status?.isLoading && status.message.toLowerCase().includes('uninstall')}Uninstalling...{:else}Uninstall{/if}
                   </button>
-                </div>
               {/if}
             </div>
 
-            {#if packageOpStatus[userPkg.name]?.message && !isUninstallModalOpen}
-              <div 
-                class={`package-op-status ${packageOpStatus[userPkg.name]?.isLoading ? 'loading' : (packageOpStatus[userPkg.name]?.isError ? 'error' : 'success')}`}
-                role="status"
-                aria-live="polite">
-                {packageOpStatus[userPkg.name]?.isLoading ? 'Processing...' : ''} {packageOpStatus[userPkg.name]?.message}
-                {#if packageOpStatus[userPkg.name]?.details && packageOpStatus[userPkg.name]?.isError}
-                  <pre class="error-details">{packageOpStatus[userPkg.name]?.details}</pre>
+          {#if status && (status.message || status.details)}
+            <div class="package-status" class:error={status.isError} class:success={!status.isError && !status.isLoading}>
+                <span>{status.message}</span>
+                {#if status.details}
+                    <button class="details-button" on:click={() => showDetails(pkg.name)}>Details</button>
+                {/if}
+                 {#if !status.isLoading}
+                    <button class="dismiss-status-button" on:click={() => {delete packageOpStatus[pkg.name]; packageOpStatus = packageOpStatus;}} title="Dismiss status">&times;</button>
                 {/if}
               </div>
             {/if}
 
-            {#if userPkg.showDependencies && userPkg.dependencies.length > 0}
+          {#if packageViewMode === 'user' && 'dependencies' in pkg}
+            {@const userPkg = /** @type {UserPackageWithDependencies} */ (pkg)}
+            {#if userPkg.showDependencies && userPkg.dependencies && userPkg.dependencies.length > 0}
               <ul class="dependencies-list">
                 {#each userPkg.dependencies as dep (dep.name)}
-                  <li>{dep.name}</li>
+                  <li class="dependency-item">{dep.name}</li>
                 {/each}
               </ul>
-            {:else if userPkg.showDependencies && userPkg.dependencies.length === 0}
-               <p class="no-deps-message">No known dependencies in this dimension.</p>
+            {/if}
             {/if}
           </li>
-        {:else}
-          {@const displayPkg = /** @type {DisplayablePackage} */ (pkg)}
-          <li class="package-item-flat">{displayPkg.name}</li>
-        {/if}
       {/each}
     </ul>
-  {:else if packages.length > 0 && (searchTerm.trim() || (packageViewMode === 'user' && selectedCategoryFilter !== PackageCategory.ALL))}
-    <p class="no-packages-message">
-      No packages match your current filter criteria 
-      {#if searchTerm.trim()}(search: "{searchTerm}"){/if}
-      {#if packageViewMode === 'user' && selectedCategoryFilter !== PackageCategory.ALL}(category: "{formatCategoryName(selectedCategoryFilter)}"){/if}.
-      Clear filters to see all {packages.length} packages.
-    </p>
-  {:else if !errorMessage} 
-    <p class="no-packages-message">The DNF void seems empty for {packageViewMode === 'user' ? 'user installed' : 'all'} packages.</p>
   {/if}
 </div>
 
-<svelte:head>
-  <title>Nebula DNF Explorer</title>
-</svelte:head>
+<UninstallModal 
+  bind:isOpen={isUninstallModalOpen} 
+  packageName={packageForUninstall}
+  on:uninstallCompleted={handleUninstallCompleted}
+  on:close={() => isUninstallModalOpen = false}
+/>

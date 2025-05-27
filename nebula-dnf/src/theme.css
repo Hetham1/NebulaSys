@@ -1,0 +1,384 @@
+body {
+  background-color: #1a1a2e; /* Deep space blue */
+  color: #e0e0e0; /* Light grey for text */
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  margin: 0;
+  padding: 0;
+  line-height: 1.6;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem;
+  min-height: 100vh;
+}
+
+.app-header {
+  text-align: center;
+  margin-bottom: 2rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #2c2c54; /* Slightly lighter purple for border */
+}
+
+.app-header h1 {
+  font-size: 2.8rem;
+  color: #a6a6ff; /* Lighter purple/blue for title */
+  font-weight: 300; /* Lighter font for a sleeker look */
+  letter-spacing: 1px;
+  text-shadow: 0 0 10px rgba(166, 166, 255, 0.3);
+}
+
+.error-message {
+  background-color: #4B0000; /* Darker red for errors */
+  color: #ffdddd;
+  padding: 1rem;
+  border: 1px solid #800000;
+  border-radius: 8px;
+  margin-bottom: 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.error-message.floating-message { /* Added */
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  min-width: 300px;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+}
+.error-message button {
+  background-color: transparent;
+  color: #ffdddd;
+  border: 1px solid #ffdddd;
+  padding: 0.3rem 0.7rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s;
+}
+.error-message button:hover {
+  background-color: #ffdddd;
+  color: #4B0000;
+}
+
+
+.controls {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 2rem;
+  align-items: center;
+  flex-wrap: wrap; /* Allow controls to wrap on smaller screens */
+  background-color: #23233e; /* Slightly lighter than body for depth */
+  padding: 1rem;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+.view-switcher {
+  display: flex;
+  border-radius: 6px;
+  overflow: hidden; /* Ensures child button borders don\'t overlap weirdly */
+   box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+.view-switcher button,
+.refresh-button,
+.category-filter,
+.search-input {
+  padding: 0.75rem 1.25rem;
+  border: 1px solid #3c3c6e; /* Dark purple border */
+  background-color: #2c2c54; /* Purple-ish blue */
+  color: #e0e0e0;
+  cursor: pointer;
+  transition: background-color 0.3s ease, box-shadow 0.3s ease;
+  font-size: 0.95rem;
+}
+
+.view-switcher button {
+  border-radius: 0; /* Remove individual radius, parent .view-switcher handles it */
+  border-right-width: 0; /* Remove right border for adjacent buttons */
+}
+.view-switcher button:first-child {
+   border-top-left-radius: 6px;
+   border-bottom-left-radius: 6px;
+}
+.view-switcher button:last-child {
+  border-right-width: 1px; /* Add border back to the last button */
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+
+.view-switcher button.active {
+  background-color: #4a4ac0; /* Brighter blue for active tab */
+  color: #ffffff;
+  box-shadow: inset 0 0 5px rgba(0,0,0,0.3);
+}
+.view-switcher button:not(.active):hover {
+  background-color: #383870; /* Darker hover for non-active */
+}
+ .view-switcher button:disabled,
+ .refresh-button:disabled {
+  background-color: #2a2a4a;
+  color: #6c6c8e;
+  cursor: not-allowed;
+ }
+
+
+.search-input {
+  flex-grow: 1; /* Allow search to take available space */
+  border-radius: 6px;
+  min-width: 200px; /* Ensure it doesn\'t get too small */
+}
+.search-input:focus {
+  outline: none;
+  border-color: #6a6aff; /* Lighter blue for focus */
+  box-shadow: 0 0 0 2px rgba(106, 106, 255, 0.3);
+}
+
+.category-filter {
+    border-radius: 6px;
+}
+.category-filter:focus {
+   outline: none;
+  border-color: #6a6aff; /* Lighter blue for focus */
+  box-shadow: 0 0 0 2px rgba(106, 106, 255, 0.3);
+}
+
+.refresh-button {
+  border-radius: 6px;
+}
+.refresh-button:not(:disabled):hover {
+  background-color: #383870;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+}
+
+
+.loading-indicator, .empty-state {
+  text-align: center;
+  padding: 3rem;
+  color: #b0b0d0; /* Muted text color */
+}
+.spinner {
+  border: 4px solid #3c3c6e; /* Darker part of spinner */
+  border-top: 4px solid #8a8aff; /* Lighter, animated part */
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  animation: spin 1s linear infinite;
+  margin: 0 auto 1rem;
+}
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.package-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.package-item {
+  background-color: #23233e; /* Slightly lighter than body */
+  border: 1px solid #30305c; /* Subtle border */
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1rem;
+  border-radius: 8px;
+  transition: background-color 0.3s ease, transform 0.2s ease;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+}
+.package-item:hover {
+  background-color: #2a2a4a; /* Slightly darker on hover */
+  /* transform: translateY(-2px); // Subtle lift effect */
+}
+
+.package-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.package-name {
+  font-size: 1.3rem;
+  font-weight: 500;
+  color: #c8c8ff; /* Light lavender */
+}
+
+.package-category {
+  font-size: 0.85rem;
+  background-color: #3c3c6e; /* Category chip background */
+  color: #dadaff;
+  padding: 0.25rem 0.6rem;
+  border-radius: 12px; /* Pill shape */
+  font-style: italic;
+}
+
+.package-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.action-button {
+  padding: 0.6rem 1rem;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background-color 0.2s ease, color 0.2s ease, opacity 0.2s ease;
+}
+.action-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.action-button.update-button {
+  background-color: #3068D2; /* Brighter blue */
+  color: white;
+  border-color: #2857a9;
+}
+.action-button.update-button:not(:disabled):hover {
+  background-color: #2857a9;
+}
+
+.action-button.uninstall-button {
+  background-color: #B83030; /* Red for uninstall */
+  color: white;
+  border-color: #932727;
+}
+.action-button.uninstall-button:not(:disabled):hover {
+  background-color: #932727;
+}
+
+/* Generic action button (like Show/Hide Deps) */
+.action-button:not(.update-button):not(.uninstall-button) {
+  background-color: #4a4a7a; /* Neutral purple */
+  color: #e0e0e0;
+  border-color: #3c3c6e;
+}
+ .action-button:not(.update-button):not(.uninstall-button):not(:disabled):hover {
+  background-color: #383860;
+}
+
+
+.dependencies-list {
+  list-style: disc; /* Use disc for a more standard list look */
+  padding-left: 25px; /* Indent dependencies */
+  margin-top: 0.75rem;
+  background-color: rgba(0,0,0,0.1); /* Slightly darker background for dep list */
+  border-radius: 4px;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
+.dependency-item {
+  padding: 0.3rem 0;
+  font-size: 0.9rem;
+  color: #b0b0d0; /* Muted color for dependencies */
+  border-bottom: 1px dashed #3a3a60; /* Dashed separator */
+}
+.dependency-item:last-child {
+  border-bottom: none;
+}
+
+.package-status {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.package-status.success {
+  background-color: #285028; /* Dark green */
+  color: #d8ffd8;
+  border: 1px solid #387038;
+}
+.package-status.error {
+  background-color: #502828; /* Dark red */
+  color: #ffd8d8;
+  border: 1px solid #703838;
+}
+.package-status span {
+  flex-grow: 1;
+  margin-right: 10px;
+}
+.details-button, .dismiss-status-button {
+  background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.2);
+  color: inherit; /* Inherit color from parent (.success or .error) */
+  padding: 0.3rem 0.6rem;
+  border-radius: 3px;
+  cursor: pointer;
+  margin-left: 0.5rem;
+}
+.details-button:hover, .dismiss-status-button:hover {
+  background: rgba(255,255,255,0.2);
+}
+.dismiss-status-button {
+    font-weight: bold;
+}
+
+/* Transitions for list items for smoother add/remove (if Svelte supports it easily) */
+/* Requires <svelte:options ... /> or a transition directive */
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .container {
+    padding: 1rem;
+  }
+  .app-header h1 {
+    font-size: 2.2rem;
+  }
+  .controls {
+    flex-direction: column;
+    align-items: stretch; /* Make controls take full width */
+  }
+  .search-input, .category-filter, .refresh-button, .view-switcher {
+    width: 100%; /* Full width for controls on small screens */
+  }
+  .view-switcher {
+    display: grid; /* Distribute buttons evenly */
+    grid-template-columns: 1fr 1fr;
+  }
+  .package-info {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .package-category {
+    margin-top: 0.5rem;
+  }
+  .package-actions {
+    margin-top: 1rem; /* More space after info on small screens */
+  }
+}
+
+@media (max-width: 480px) {
+  .app-header h1 {
+    font-size: 1.8rem;
+  }
+  .package-name {
+    font-size: 1.1rem;
+  }
+  .action-button {
+    padding: 0.5rem 0.8rem;
+    font-size: 0.85rem;
+    width: 100%; /* Stack buttons vertically */
+    margin-bottom: 0.5rem;
+  }
+  .action-button:last-child {
+      margin-bottom: 0;
+  }
+  .package-actions {
+      flex-direction: column;
+  }
+   .controls > *:not(:last-child) { /* Ensure some spacing for stacked controls */
+      margin-bottom: 0.75rem;
+  }
+} 
