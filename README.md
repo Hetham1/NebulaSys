@@ -39,3 +39,4 @@ The manager for package managers. This project aims to provide unified interface
     *   Features robust parsing of `dnf` command output.
 
 ---
+please note that this is a hobby project and its a work in progress, also note that currently im only planing to develop the same thing for apt and maybe snaps and flatpacks.
