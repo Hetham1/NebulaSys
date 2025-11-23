@@ -1,4 +1,4 @@
-# NebulaSys (WIP)
+# NebulaSys (WORK IN PROGRESS)
 The manager for package managers. This project aims to provide unified interfaces for various system package managers.
 
 ## Modules
