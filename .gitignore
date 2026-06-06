@@ -1,0 +1,9 @@
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+dist/
+build/
+node_modules/
+.svelte-kit/
+target/

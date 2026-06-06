@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "nebula-dnf",
+  "productName": "NebulaSys",
   "version": "0.1.0",
   "identifier": "com.nebula-dnf.app",
   "build": {
@@ -12,62 +12,15 @@
   "app": {
     "windows": [
       {
-        "title": "nebula-dnf",
-        "width": 800,
-        "height": 600
+        "title": "NebulaSys",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 960,
+        "minHeight": 640
       }
     ],
     "security": {
-      "csp": null,
-      "capabilities": [
-        {
-          "identifier": "main-window-shell-access",
-          "windows": ["main"],
-          "permissions": [
-            {
-              "identifier": "shell:allow-execute",
-              "scope": [
-                {
-                  "name": "run-privileged-dnf",
-                  "command": "pkexec",
-                  "args": [
-                    {
-                      "value": "dnf",
-                      "validator": "^dnf$"
-                    },
-                    { "validator": ".*" }
-                  ],
-                  "sidecar": false
-                },
-                {
-                  "name": "run-privileged-rpm",
-                  "command": "pkexec",
-                  "args": [
-                    {
-                      "value": "rpm",
-                      "validator": "^rpm$"
-                    },
-                    { "validator": ".*" }
-                  ],
-                  "sidecar": false
-                },
-                {
-                  "name": "run-rpm-qa",
-                  "command": "rpm",
-                  "args": ["-qa"],
-                  "sidecar": false
-                },
-                {
-                  "name": "run-rpm-queries",
-                  "command": "rpm",
-                  "args": ["-q", { "validator": ".*" }],
-                  "sidecar": false
-                }
-              ]
-            }
-          ]
-        }
-      ]
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
     }
   },
   "bundle": {

@@ -1,0 +1,46 @@
+name: Bug report
+description: Report a NebulaSys bug.
+title: "fix: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong?
+    validations:
+      required: true
+  - type: dropdown
+    id: manager
+    attributes:
+      label: Package manager
+      options:
+        - DNF/RPM
+        - APT/dpkg
+        - Snap
+        - Flatpak
+        - UI/general
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Open...
+        2. Click...
+        3. See...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or command output
+      render: text
+

@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest a capability or package-manager improvement.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow should NebulaSys improve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should happen?
+    validations:
+      required: true
+  - type: dropdown
+    id: manager
+    attributes:
+      label: Package manager
+      options:
+        - DNF/RPM
+        - APT/dpkg
+        - Snap
+        - Flatpak
+        - Cross-manager
+        - UI/general
+    validations:
+      required: true
+  - type: textarea
+    id: commands
+    attributes:
+      label: Relevant package-manager commands
+      render: shell
+

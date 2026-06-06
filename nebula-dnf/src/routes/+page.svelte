@@ -1,470 +1,485 @@
 <script>
   import { invoke } from '@tauri-apps/api/core';
-  import { onMount, onDestroy } from 'svelte';
-  import UninstallModal from './UninstallModal.svelte'; // Import the modal
-  import '../theme.css'; // Import the new theme CSS
-
-  /** @type {Record<string, string>} */
-  const PackageCategory = {
-    MANUAL: 'Manual',
-    DESKTOP_ENVIRONMENT: 'DesktopEnvironment',
-    SYSTEM: 'System',
-    LIBRARY: 'Library',
-    DEVELOPMENT: 'Development',
-    MULTIMEDIA: 'Multimedia',
-    OFFICE: 'Office',
-    GAMES: 'Games',
-    UTILITY: 'Utility',
-    NETWORK: 'Network',
-    SECURITY: 'Security',
-    OTHER_APPLICATION: 'OtherApplication',
-    UNKNOWN: 'Unknown',
-    ALL: 'All Categories' // Special value for filter UI
-  };
+  import { onMount } from 'svelte';
+  import {
+    AlertTriangle,
+    ChevronDown,
+    ChevronRight,
+    Download,
+    Layers,
+    PackageOpen,
+    RefreshCw,
+    Search,
+    ShieldCheck,
+    Trash2
+  } from '@lucide/svelte';
+  import OperationModal from './OperationModal.svelte';
+  import '../theme.css';
 
   /**
-   * @typedef {Object} DisplayablePackage
+   * @typedef {Object} ManagerStatus
+   * @property {string} id
+   * @property {string} label
+   * @property {boolean} installed
+   * @property {string} executable
+   * @property {string | null | undefined} version
+   * @property {string} notes
+   * @property {boolean} supports_user_installed
+   * @property {boolean} supports_dependencies
+   * @property {boolean} supports_update
+   * @property {boolean} supports_uninstall
+   * @property {boolean} supports_force_uninstall
+   * @property {boolean} supports_cleanup_orphans
+   * @property {boolean} requires_privilege
+   */
+
+  /**
+   * @typedef {Object} DependencyInfo
    * @property {string} name
+   * @property {string} kind
    */
 
   /**
-   * @typedef {Object} UserPackageWithDependencies
+   * @typedef {Object} PackageInfo
+   * @property {string} manager
    * @property {string} name
-   * @property {string} category // Mirrors PackageCategory enum from Rust
-   * @property {DisplayablePackage[]} dependencies
-   * @property {boolean} [showDependencies]
+   * @property {string} display_name
+   * @property {string | null | undefined} version
+   * @property {string} category
+   * @property {string | null | undefined} summary
+   * @property {string} source
+   * @property {DependencyInfo[]} dependencies
+   * @property {boolean} dependencies_loaded
    */
 
-  /**
-   * @typedef {Object} PackageOperationResultType
-   * @property {boolean} success
-   * @property {string} message
-   * @property {string | null | undefined} [details]
-   */
+  const MANAGER_ORDER = ['dnf', 'apt', 'snap', 'flatpak'];
+  const ALL_CATEGORIES = 'All categories';
 
-  /** @type {(UserPackageWithDependencies[] | DisplayablePackage[])} */
-  let packages = [];
-  let errorMessage = '';
-  let isLoading = true;
-  /** @type {'all' | 'user'} */
+  /** @type {ManagerStatus[]} */
+  let managerStatuses = [];
+  /** @type {string} */
+  let selectedManager = 'dnf';
+  /** @type {'user' | 'all'} */
   let packageViewMode = 'user';
+  /** @type {PackageInfo[]} */
+  let packages = [];
+  let isLoading = true;
+  let errorMessage = '';
   let searchTerm = '';
-  let selectedCategoryFilter = PackageCategory.ALL;
-
-  /** @type {Array<{key: string, value: string}>} */
-  let availableCategoriesForFilter = [{ key: 'ALL', value: PackageCategory.ALL }]; // Initialize with ALL
-
-  /** @type {Map<'all' | 'user', (UserPackageWithDependencies[] | DisplayablePackage[])>} */
+  let selectedCategory = ALL_CATEGORIES;
+  /** @type {Map<string, PackageInfo[]>} */
   let packageCache = new Map();
+  /** @type {Set<string>} */
+  let expandedRows = new Set();
+  /** @type {Record<string, boolean>} */
+  let dependencyLoading = {};
 
-  /** @type {Record<string, {isLoading: boolean, message: string, isError: boolean, details?: string | null}>} */
-  let packageOpStatus = {}; // To track status of ops per package, e.g. { "packageName": { isLoading: true, message: "", isError: false } }
-  let activeOperationCount = 0; // To disable global refresh/view change during any package operation
+  let operationModalOpen = false;
+  /** @type {PackageInfo | null} */
+  let operationPackage = null;
+  /** @type {'update' | 'uninstall'} */
+  let operationType = 'update';
 
-  // Uninstall Modal State
-  let isUninstallModalOpen = false;
-  let packageForUninstall = '';
+  $: selectedManagerStatus = managerStatuses.find((manager) => manager.id === selectedManager);
+  $: selectedManagerAvailable = Boolean(selectedManagerStatus?.installed);
+  $: selectedManagerLabel = selectedManagerStatus?.label || selectedManager.toUpperCase();
+  $: categories = [
+    ALL_CATEGORIES,
+    ...Array.from(new Set(packages.map((pkg) => pkg.category).filter(Boolean))).sort()
+  ];
+  $: filteredPackages = filterPackages(packages, searchTerm, selectedCategory);
+  $: availableManagers = managerStatuses.filter((manager) => manager.installed).length;
+  $: dependencyLoadingCount = Object.values(dependencyLoading).filter(Boolean).length;
 
-  /** @param {'all' | 'user'} mode */
-  async function fetchPackages(mode, forceRefresh = false) {
-    if (activeOperationCount > 0 && !forceRefresh) {
-        errorMessage = "Please wait for ongoing package operations to complete before fetching.";
-        return;
-    }
-    isLoading = true;
-    errorMessage = '';
+  /** @param {PackageInfo} pkg */
+  function packageKey(pkg) {
+    return `${pkg.manager}:${pkg.name}`;
+  }
 
-    if (!forceRefresh && packageCache.has(mode)) {
-      const cachedPackages = packageCache.get(mode);
-      if (cachedPackages) {
-        packages = cachedPackages;
-        if (mode === 'user') {
-          updateAvailableCategoriesAndSelection(/** @type {UserPackageWithDependencies[]} */ (packages));
-        }
-        isLoading = false;
-        console.log(`Loaded ${mode} packages from cache.`);
-        return;
+  /** @param {string} manager @param {'user' | 'all'} view */
+  function cacheKey(manager, view) {
+    return `${manager}:${view}`;
+  }
+
+  function currentManagerStatus() {
+    return managerStatuses.find((manager) => manager.id === selectedManager);
+  }
+
+  /** @param {PackageInfo[]} sourcePackages @param {string} query @param {string} category */
+  function filterPackages(sourcePackages, query, category) {
+    const normalizedQuery = query.trim().toLowerCase();
+    return sourcePackages.filter((pkg) => {
+      if (category !== ALL_CATEGORIES && pkg.category !== category) {
+        return false;
       }
-    }
-    
-    console.log(`Fetching ${mode} packages from backend...`);
-    packages = [];
-
-    try {
-      let result;
-      if (mode === 'user') {
-        result = await invoke('list_user_installed_packages', { forceRefresh });
-        const userPackages = (/** @type {UserPackageWithDependencies[]} */ (result)).map(pkg => ({ 
-          ...pkg, 
-          showDependencies: false 
-        }));
-        packages = userPackages;
-        packageCache.set(mode, userPackages);
-        updateAvailableCategoriesAndSelection(userPackages);
-      } else {
-        result = await invoke('list_installed_packages');
-        packages = /** @type {DisplayablePackage[]} */ (result); 
-        packageCache.set(mode, result);
-        availableCategoriesForFilter = [{ key: 'ALL', value: PackageCategory.ALL }]; // Reset for 'all' view
-      }
-    } catch (error) {
-      console.error(`Error loading ${mode} packages:`, error);
-      errorMessage = String(error);
-    }
-    isLoading = false;
-  }
-
-  /** @param {UserPackageWithDependencies[]} userPackages */
-  function updateAvailableCategoriesAndSelection(userPackages) {
-    const uniqueCategories = new Set();
-    userPackages.forEach(pkg => {
-      // Only add valid, known categories to the filter options, excluding UNKNOWN if desired
-      if (pkg.category && Object.values(PackageCategory).includes(pkg.category) && pkg.category !== PackageCategory.UNKNOWN) {
-        uniqueCategories.add(pkg.category);
-      }
-    });
-
-    const sortedUniqueCategories = Array.from(uniqueCategories).sort((a, b) => {
-        return formatCategoryName(/** @type {string} */ (a)).localeCompare(formatCategoryName(/** @type {string} */ (b)));
-    });
-
-    availableCategoriesForFilter = [
-      { key: 'ALL', value: PackageCategory.ALL }, 
-      ...sortedUniqueCategories.map(catValue => ({
-        key: Object.keys(PackageCategory).find(k => PackageCategory[k] === catValue) || String(catValue), 
-        value: String(catValue)
-      }))
-    ];
-    
-    // Check if the current selectedCategoryFilter is still valid
-    const isValidSelection = availableCategoriesForFilter.some(cat => cat.value === selectedCategoryFilter);
-    if (!isValidSelection) {
-      selectedCategoryFilter = PackageCategory.ALL; // Reset to ALL if current selection is no longer available
-    }
-  }
-
-  /** @param {'all' | 'user'} mode */
-  function setViewMode(mode) {
-    if (activeOperationCount > 0) {
-        errorMessage = "Please wait for ongoing package operations to complete before changing views.";
-        return;
-    }
-    packageViewMode = mode;
-    searchTerm = ''; 
-    selectedCategoryFilter = PackageCategory.ALL; // Reset category filter on view change
-    if (mode === 'user') {
-      // Ensure categories are updated based on the current state of 'packages' 
-      // which might be from cache or will be fetched.
-      // If packages is empty or not user packages, updateAvailableCategoriesAndSelection will handle it.
-      updateAvailableCategoriesAndSelection(/** @type {UserPackageWithDependencies[]} */ (packageCache.get('user') || []));
-    }
-    fetchPackages(mode); 
-  }
-
-  function refreshCurrentView() {
-    if (activeOperationCount > 0) {
-        errorMessage = "Please wait for ongoing package operations to complete before refreshing.";
-        return;
-    }
-    console.log('Forcing refresh for current view:', packageViewMode);
-    searchTerm = ''; 
-    // selectedCategoryFilter remains as is, user might want to refresh current filtered view
-    fetchPackages(packageViewMode, true); // This will call updateAvailableCategoriesAndSelection internally
-  }
-
-  /** @param {string} packageName */
-  function toggleDependencies(packageName) {
-    packages = packages.map(pkg => {
-      if ('dependencies' in pkg && pkg.name === packageName) {
-        const userPkg = /** @type {UserPackageWithDependencies} */ (pkg);
-        return { ...userPkg, showDependencies: !userPkg.showDependencies };
-      }
-      return pkg;
-    });
-  }
-
-  $: filteredPackages = (() => {
-    let tempFiltered = packages;
-
-    // 1. Apply category filter (only for 'user' view)
-    if (packageViewMode === 'user' && selectedCategoryFilter !== PackageCategory.ALL) {
-      tempFiltered = tempFiltered.filter(pkg => {
-        const userPkg = /** @type {UserPackageWithDependencies} */ (pkg);
-        return userPkg.category === selectedCategoryFilter;
-      });
-    }
-
-    // 2. Apply text search term
-    if (!searchTerm.trim()) {
-      return tempFiltered; 
-    }
-    const lowerSearchTerm = searchTerm.toLowerCase();
-    return tempFiltered.filter(pkg => {
-      const pkgNameLower = pkg.name.toLowerCase();
-      if (pkgNameLower.includes(lowerSearchTerm)) {
+      if (!normalizedQuery) {
         return true;
       }
-      if (packageViewMode === 'user' && 'dependencies' in pkg) {
-        const userPkg = /** @type {UserPackageWithDependencies} */ (pkg);
-        if (userPkg.showDependencies && userPkg.dependencies) {
-          return userPkg.dependencies.some(dep => 
-            dep.name.toLowerCase().includes(lowerSearchTerm)
-          );
-        }
-      }
-      return false;
+      return [
+        pkg.name,
+        pkg.display_name,
+        pkg.version,
+        pkg.category,
+        pkg.summary,
+        pkg.source,
+        ...(pkg.dependencies || []).map((dep) => dep.name)
+      ]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(normalizedQuery));
     });
-  })();
-
-  // Helper function to format category names for display
-  /** @param {string} categoryValue */
-  function formatCategoryName(categoryValue) {
-    if (!categoryValue) return '';
-    // Add spaces before capital letters, but not for the first letter if it's capital
-    // and handle cases like "ALL" or single words.
-    if (categoryValue === PackageCategory.ALL) return PackageCategory.ALL;
-    return categoryValue.replace(/([A-Z])/g, ' $1').replace(/^\s+|\s+$/g, '').trim();
   }
 
-  // Function to initiate a package operation status
-  /** 
-   * @param {string} packageName 
-   * @param {boolean} isLoading
-   * @param {string} [message='']
-   * @param {boolean} [isError=false]
-   * @param {string | null | undefined} [details]
-  */
-  function setPackageOpStatus(packageName, isLoading, message = '', isError = false, details = undefined) {
-    packageOpStatus = {
-      ...packageOpStatus,
-      [packageName]: { isLoading, message, isError, details }
-    };
-    if (isLoading) activeOperationCount++; else if (activeOperationCount > 0) activeOperationCount--;
-  }
-
-  // Function to clear a package operation status
-  /** @param {string} packageName */
-  function clearPackageOpStatus(packageName) {
-    const { [packageName]: _, ...rest } = packageOpStatus;
-    packageOpStatus = rest;
-    // Ensure activeOperationCount is decremented if it was loading
-    // This might be redundant if setPackageOpStatus(false) was called, but good for safety
-  }
-
-  /**
-   * @param {string} packageName
-   * @param {'update'} action // Only 'update' now
-   */
-  async function handlePackageAction(packageName, action) {
-    if (action !== 'update') {
-      console.warn('handlePackageAction called with non-update action:', action);
-      return; // Should not happen if UI is correct
-    }
-    const command = 'manage_package_update';
-    const actionVerbGerund = 'updating';
-    const actionVerbPast = 'updated';
-
-    // Optional: Could add a simpler window.confirm for updates too if desired.
-    // if (!window.confirm(`Are you sure you want to ${action} "${packageName}"?`)) return;
-
-    setPackageOpStatus(packageName, true, `Attempting to ${action} ${packageName}...`);
-
+  async function initializeApp() {
+    isLoading = true;
+    errorMessage = '';
     try {
-      const result = /** @type {PackageOperationResultType} */ (await invoke(command, { packageName }));
-      setPackageOpStatus(packageName, false, `${result.success ? 'Successfully' : 'Problem'} ${actionVerbPast} ${packageName}. ${result.message}`, !result.success, result.details);
-      console.log(`Package ${action} ${result.success ? 'success' : 'failed'}:`, result.message, result.details);
-      if (result.success) {
-        await fetchPackages(packageViewMode, true); 
-      }
+      managerStatuses = /** @type {ManagerStatus[]} */ (await invoke('get_manager_statuses'));
+      const firstAvailable = MANAGER_ORDER.find((id) =>
+        managerStatuses.some((manager) => manager.id === id && manager.installed)
+      );
+      selectedManager = firstAvailable || 'dnf';
+      const status = managerStatuses.find((manager) => manager.id === selectedManager);
+      packageViewMode = status?.supports_user_installed ? 'user' : 'all';
+      await fetchPackages(false);
     } catch (error) {
-      const errorMsg = String(error);
-      setPackageOpStatus(packageName, false, `Error ${actionVerbGerund} ${packageName}: ${errorMsg}`, true, errorMsg);
-      console.error(`Package ${action} error:`, error);
+      errorMessage = String(error);
+      packages = [];
+    } finally {
+      isLoading = false;
     }
-    setTimeout(() => {
-        if (packageOpStatus[packageName] && !packageOpStatus[packageName].isLoading) {
-            clearPackageOpStatus(packageName);
-        }
-    }, 8000);
   }
 
-  /** @param {string} pkgName */
-  function openUninstallModal(pkgName) {
-    if (activeOperationCount > 0 && !packageOpStatus[pkgName]?.isLoading) {
-      errorMessage = "Please wait for other ongoing package operations to complete.";
-      setTimeout(() => errorMessage = '', 3000);
+  async function fetchPackages(forceRefresh = false) {
+    const status = currentManagerStatus();
+    if (!status?.installed) {
+      packages = [];
       return;
     }
-    packageForUninstall = pkgName;
-    isUninstallModalOpen = true;
-  }
 
-  function handleUninstallCompleted() {
-    isUninstallModalOpen = false;
-    packageForUninstall = '';
-    fetchPackages(packageViewMode, true); 
-  }
-
-  // Ensure onMount doesn't run fetch if ops are active (though unlikely on initial mount)
-  onMount(() => {
-    if (activeOperationCount === 0) {
-        fetchPackages(packageViewMode); // This will call updateAvailableCategoriesAndSelection for user view
+    const key = cacheKey(selectedManager, packageViewMode);
+    if (!forceRefresh && packageCache.has(key)) {
+      packages = packageCache.get(key) || [];
+      return;
     }
-  });
 
-  // Cleanup active operations if component is destroyed (e.g. navigation)
-  onDestroy(() => {
-    activeOperationCount = 0; 
-  });
-
-  /** @param {string} packageName */
-  function showDetails(packageName) {
-    const status = packageOpStatus[packageName];
-    if (status && status.details) {
-      // For simplicity, using alert. In a real app, use a modal or a dedicated area.
-      alert(`Details for ${packageName}:\n\n${status.details}`);
-    } else {
-      alert(`No details available for ${packageName}.`);
+    isLoading = true;
+    errorMessage = '';
+    try {
+      const result = /** @type {PackageInfo[]} */ (await invoke('list_packages', {
+        manager: selectedManager,
+        view: packageViewMode,
+        forceRefresh
+      }));
+      packages = result;
+      packageCache.set(key, result);
+      expandedRows = new Set();
+      selectedCategory = ALL_CATEGORIES;
+    } catch (error) {
+      errorMessage = String(error);
+      packages = [];
+    } finally {
+      isLoading = false;
     }
   }
+
+  /** @param {string} managerId */
+  async function selectManager(managerId) {
+    if (selectedManager === managerId) return;
+    selectedManager = managerId;
+    const status = managerStatuses.find((manager) => manager.id === managerId);
+    packageViewMode = status?.supports_user_installed ? 'user' : 'all';
+    searchTerm = '';
+    selectedCategory = ALL_CATEGORIES;
+    await fetchPackages(false);
+  }
+
+  /** @param {'user' | 'all'} view */
+  async function setViewMode(view) {
+    if (packageViewMode === view) return;
+    packageViewMode = view;
+    selectedCategory = ALL_CATEGORIES;
+    searchTerm = '';
+    await fetchPackages(false);
+  }
+
+  async function refreshCurrentView() {
+    packageCache.delete(cacheKey(selectedManager, packageViewMode));
+    await fetchPackages(true);
+  }
+
+  /** @param {PackageInfo} pkg */
+  async function toggleRequirements(pkg) {
+    const key = packageKey(pkg);
+    if (expandedRows.has(key)) {
+      expandedRows.delete(key);
+      expandedRows = new Set(expandedRows);
+      return;
+    }
+
+    expandedRows.add(key);
+    expandedRows = new Set(expandedRows);
+
+    if (pkg.dependencies_loaded) return;
+
+    dependencyLoading = { ...dependencyLoading, [key]: true };
+    try {
+      const dependencies = /** @type {DependencyInfo[]} */ (await invoke('get_package_dependencies', {
+        manager: pkg.manager,
+        packageName: pkg.name
+      }));
+      packages = packages.map((candidate) =>
+        packageKey(candidate) === key
+          ? { ...candidate, dependencies, dependencies_loaded: true }
+          : candidate
+      );
+      packageCache.set(cacheKey(selectedManager, packageViewMode), packages);
+    } catch (error) {
+      errorMessage = String(error);
+      packages = packages.map((candidate) =>
+        packageKey(candidate) === key
+          ? { ...candidate, dependencies: [], dependencies_loaded: true }
+          : candidate
+      );
+    } finally {
+      dependencyLoading = { ...dependencyLoading, [key]: false };
+    }
+  }
+
+  /** @param {PackageInfo} pkg @param {'update' | 'uninstall'} operation */
+  function openOperation(pkg, operation) {
+    operationPackage = pkg;
+    operationType = operation;
+    operationModalOpen = true;
+  }
+
+  async function handleOperationCompleted() {
+    operationModalOpen = false;
+    operationPackage = null;
+    await refreshCurrentView();
+  }
+
+  onMount(initializeApp);
 </script>
 
 <svelte:head>
-  <title>NebulaSys - Package Manager</title>
+  <title>NebulaSys</title>
 </svelte:head>
 
-<div class="container">
-  <header class="app-header">
-    <h1>NebulaSys Package Manager</h1>
-  </header>
-
-  {#if errorMessage}
-    <div class="error-message floating-message">
-      <p>{errorMessage}</p>
-      <button on:click={() => errorMessage = ''}>Dismiss</button>
+<div class="app-shell">
+  <aside class="sidebar" aria-label="Package managers">
+    <div class="brand-block">
+      <div class="brand-mark"><PackageOpen size={22} /></div>
+      <div>
+        <strong>NebulaSys</strong>
+        <span>Package control</span>
+      </div>
     </div>
-  {/if}
 
-  <div class="controls">
-    <div class="view-switcher">
-      <button 
-        class:active={packageViewMode === 'user'} 
-        on:click={() => setViewMode('user')}
-        disabled={activeOperationCount > 0}>
-        User Installed
-    </button>
-      <button 
-        class:active={packageViewMode === 'all'} 
-        on:click={() => setViewMode('all')}
-        disabled={activeOperationCount > 0}>
-      All Packages
-    </button>
-  </div>
-      <input 
-        type="text" 
-      placeholder="Search packages..." 
-        bind:value={searchTerm} 
-        class="search-input"
-      />
-    {#if packageViewMode === 'user'}
-      <select bind:value={selectedCategoryFilter} class="category-filter">
-        {#each availableCategoriesForFilter as cat (cat.value)}
-          <option value={cat.value}>{formatCategoryName(cat.value)}</option>
-            {/each}
-          </select>
-    {/if}
-    <button class="refresh-button" on:click={refreshCurrentView} disabled={activeOperationCount > 0 || isLoading}>
-      {#if isLoading && activeOperationCount === 0}
-        Loading...
-      {:else}
+    <nav class="manager-list">
+      {#each managerStatuses as manager (manager.id)}
+        <button
+          class:active={selectedManager === manager.id}
+          class:unavailable={!manager.installed}
+          on:click={() => selectManager(manager.id)}
+        >
+          <span>{manager.label}</span>
+          <small>{manager.installed ? 'Available' : 'Missing'}</small>
+        </button>
+      {/each}
+    </nav>
+
+    <div class="sidebar-status">
+      <ShieldCheck size={18} />
+      <span>{availableManagers} of {managerStatuses.length || 4} managers detected</span>
+    </div>
+  </aside>
+
+  <main class="workspace">
+    <header class="workspace-header">
+      <div>
+        <p>{selectedManagerLabel}</p>
+        <h1>Installed packages</h1>
+        {#if selectedManagerStatus}
+          <span>{selectedManagerStatus.notes}</span>
+        {/if}
+      </div>
+      <button class="toolbar-button" on:click={refreshCurrentView} disabled={isLoading || !selectedManagerAvailable}>
+        <RefreshCw size={17} />
         Refresh
-      {/if}
-    </button>
-  </div>
+      </button>
+    </header>
 
-  {#if isLoading && packages.length === 0}
-    <div class="loading-indicator">
-      <div class="spinner"></div>
-      <p>Loading packages...</p>
-    </div>
-  {:else if filteredPackages.length === 0 && !isLoading}
-    <div class="empty-state">
-      <p>No packages found matching your criteria.</p>
-    </div>
-  {:else}
-    <ul class="package-list">
-      {#each filteredPackages as pkg (pkg.name)} 
-        {@const status = packageOpStatus[pkg.name]}
-        <li class="package-item" class:has-op-error={status?.isError} class:has-op-success={status && !status.isLoading && !status.isError}>
-          <div class="package-info">
-            <span class="package-name">{pkg.name}</span>
-            {#if packageViewMode === 'user' && 'category' in pkg}
-          {@const userPkg = /** @type {UserPackageWithDependencies} */ (pkg)}
-              <span class="package-category" title={userPkg.category}>{formatCategoryName(userPkg.category)}</span>
-            {/if}
-              </div>
+    <section class="status-grid" aria-label="Package manager status">
+      <div>
+        <span>Packages</span>
+        <strong>{packages.length}</strong>
+      </div>
+      <div>
+        <span>Visible</span>
+        <strong>{filteredPackages.length}</strong>
+      </div>
+      <div>
+        <span>Version</span>
+        <strong>{selectedManagerStatus?.version || 'Unknown'}</strong>
+      </div>
+      <div>
+        <span>Privilege</span>
+        <strong>{selectedManagerStatus?.requires_privilege ? 'Polkit' : 'User session'}</strong>
+      </div>
+    </section>
 
-                <div class="package-actions">
-            {#if packageViewMode === 'user'}
-             {#if 'dependencies' in pkg}
-                {@const userPkg = /** @type {UserPackageWithDependencies} */ (pkg)}
-                {#if userPkg.dependencies && userPkg.dependencies.length > 0}
-                  <button 
-                    class="action-button"
-                    on:click={() => toggleDependencies(pkg.name)}
-                    title={userPkg.showDependencies ? "Hide Dependencies" : "Show Dependencies"}>
-                    {userPkg.showDependencies ? 'Hide Deps' : 'Show Deps'} ({userPkg.dependencies.length})
-                  </button>
+    {#if errorMessage}
+      <div class="notice error-notice" role="alert">
+        <AlertTriangle size={18} />
+        <span>{errorMessage}</span>
+        <button on:click={() => (errorMessage = '')}>Dismiss</button>
+      </div>
+    {/if}
+
+    <section class="toolbar" aria-label="Package filters">
+      <div class="segmented-control">
+        <button
+          class:active={packageViewMode === 'user'}
+          on:click={() => setViewMode('user')}
+          disabled={!selectedManagerStatus?.supports_user_installed || isLoading}
+        >
+          User installed
+        </button>
+        <button
+          class:active={packageViewMode === 'all'}
+          on:click={() => setViewMode('all')}
+          disabled={isLoading}
+        >
+          All packages
+        </button>
+      </div>
+
+      <label class="search-field">
+        <Search size={17} />
+        <input type="text" bind:value={searchTerm} placeholder="Search packages" />
+      </label>
+
+      <select bind:value={selectedCategory} disabled={categories.length <= 1}>
+        {#each categories as category}
+          <option value={category}>{category}</option>
+        {/each}
+      </select>
+    </section>
+
+    {#if !selectedManagerAvailable && !isLoading}
+      <section class="empty-panel">
+        <PackageOpen size={30} />
+        <h2>{selectedManagerLabel} is not available</h2>
+        <p>Install the package manager on this system and refresh NebulaSys.</p>
+      </section>
+    {:else if isLoading && packages.length === 0}
+      <section class="loading-panel">
+        <div class="spinner"></div>
+        <p>Loading {selectedManagerLabel} packages</p>
+      </section>
+    {:else if filteredPackages.length === 0}
+      <section class="empty-panel">
+        <Search size={30} />
+        <h2>No packages found</h2>
+        <p>Adjust the search or category filter.</p>
+      </section>
+    {:else}
+      <section class="package-table" aria-label="Installed packages">
+        <div class="table-header">
+          <span>Package</span>
+          <span>Version</span>
+          <span>Category</span>
+          <span>Actions</span>
+        </div>
+
+        {#each filteredPackages as pkg (packageKey(pkg))}
+          {@const key = packageKey(pkg)}
+          {@const isExpanded = expandedRows.has(key)}
+          <article class="package-row">
+            <div class="package-main">
+              <button class="expand-button" on:click={() => toggleRequirements(pkg)} aria-label="Toggle requirements">
+                {#if isExpanded}
+                  <ChevronDown size={17} />
+                {:else}
+                  <ChevronRight size={17} />
                 {/if}
-              {/if}
-              <button 
-                class="action-button update-button" 
-                on:click={() => handlePackageAction(pkg.name, 'update')}
-                disabled={status?.isLoading || activeOperationCount > 0}
-                title="Update this package">
-                {#if status?.isLoading && status.message.toLowerCase().includes('updat')}Updating...{:else}Update{/if}
-                  </button>
-                  <button 
-                class="action-button uninstall-button" 
-                on:click={() => openUninstallModal(pkg.name)}
-                disabled={status?.isLoading || activeOperationCount > 0}
-                title="Uninstall this package">
-                {#if status?.isLoading && status.message.toLowerCase().includes('uninstall')}Uninstalling...{:else}Uninstall{/if}
-                  </button>
-              {/if}
+              </button>
+              <div>
+                <strong>{pkg.display_name || pkg.name}</strong>
+                <code>{pkg.name}</code>
+                {#if pkg.summary}
+                  <p>{pkg.summary}</p>
+                {/if}
+              </div>
             </div>
 
-          {#if status && (status.message || status.details)}
-            <div class="package-status" class:error={status.isError} class:success={!status.isError && !status.isLoading}>
-                <span>{status.message}</span>
-                {#if status.details}
-                    <button class="details-button" on:click={() => showDetails(pkg.name)}>Details</button>
-                {/if}
-                 {#if !status.isLoading}
-                    <button class="dismiss-status-button" on:click={() => {delete packageOpStatus[pkg.name]; packageOpStatus = packageOpStatus;}} title="Dismiss status">&times;</button>
+            <span class="version-cell">{pkg.version || 'Unknown'}</span>
+            <span class="category-chip">{pkg.category || 'Uncategorized'}</span>
+
+            <div class="row-actions">
+              <button
+                class="icon-action"
+                on:click={() => toggleRequirements(pkg)}
+                disabled={dependencyLoading[key]}
+                title="Requirements"
+              >
+                <Layers size={16} />
+                {dependencyLoading[key] ? 'Loading' : 'Requirements'}
+              </button>
+              <button
+                class="icon-action"
+                on:click={() => openOperation(pkg, 'update')}
+                disabled={!selectedManagerStatus?.supports_update}
+                title="Update package"
+              >
+                <Download size={16} />
+                Update
+              </button>
+              <button
+                class="icon-action danger"
+                on:click={() => openOperation(pkg, 'uninstall')}
+                disabled={!selectedManagerStatus?.supports_uninstall}
+                title="Uninstall package"
+              >
+                <Trash2 size={16} />
+                Uninstall
+              </button>
+            </div>
+
+            {#if isExpanded}
+              <div class="requirements-panel">
+                {#if dependencyLoading[key]}
+                  <p>Loading requirements...</p>
+                {:else if pkg.dependencies && pkg.dependencies.length > 0}
+                  <ul>
+                    {#each pkg.dependencies as dep (`${dep.kind}:${dep.name}`)}
+                      <li>
+                        <span>{dep.name}</span>
+                        <small>{dep.kind}</small>
+                      </li>
+                    {/each}
+                  </ul>
+                {:else}
+                  <p>No requirement data available for this package.</p>
                 {/if}
               </div>
             {/if}
+          </article>
+        {/each}
+      </section>
+    {/if}
 
-          {#if packageViewMode === 'user' && 'dependencies' in pkg}
-            {@const userPkg = /** @type {UserPackageWithDependencies} */ (pkg)}
-            {#if userPkg.showDependencies && userPkg.dependencies && userPkg.dependencies.length > 0}
-              <ul class="dependencies-list">
-                {#each userPkg.dependencies as dep (dep.name)}
-                  <li class="dependency-item">{dep.name}</li>
-                {/each}
-              </ul>
-            {/if}
-            {/if}
-          </li>
-      {/each}
-    </ul>
-  {/if}
+    {#if dependencyLoadingCount > 0}
+      <div class="floating-status">{dependencyLoadingCount} requirement query running</div>
+    {/if}
+  </main>
 </div>
 
-<UninstallModal 
-  bind:isOpen={isUninstallModalOpen} 
-  packageName={packageForUninstall}
-  on:uninstallCompleted={handleUninstallCompleted}
-  on:close={() => isUninstallModalOpen = false}
+<OperationModal
+  bind:isOpen={operationModalOpen}
+  packageInfo={operationPackage}
+  managerStatus={selectedManagerStatus}
+  operation={operationType}
+  on:completed={handleOperationCompleted}
+  on:close={() => (operationModalOpen = false)}
 />

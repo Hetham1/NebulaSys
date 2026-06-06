@@ -1,42 +1,93 @@
-# NebulaSys (WORK IN PROGRESS)
-The manager for package managers. This project aims to provide unified interfaces for various system package managers.
+# NebulaSys
 
-## Modules
+NebulaSys is a Tauri desktop application for inspecting and managing Linux package managers from one interface. It currently supports DNF/RPM, APT/dpkg, Snap, and Flatpak with manager detection, package search, lazy requirement lookup, previewable operations, and guarded update/uninstall flows.
 
-### `nebula-dnf`
+This is still early software. Treat destructive package operations with the same care you would use in a terminal.
 
-`nebula-dnf` is a Svelte and Tauri application that provides a graphical user interface for interacting with the DNF package manager on Fedora-based systems.
+## Features
 
-#### Core Functionality:
+- Detects supported package managers available on the host system.
+- Lists user-installed and all installed packages where the manager exposes that distinction.
+- Searches and filters packages by name, version, category, source, summary, and loaded requirements.
+- Loads requirements lazily so large package databases open quickly.
+- Previews update and uninstall operations when the underlying manager supports dry runs.
+- Requires typed confirmation for actual uninstalls.
+- Validates package identifiers in the Rust backend before running package commands.
+- Uses short-lived local package caches and clears them after successful mutations.
 
-*   **List User-Installed Packages:** Displays packages explicitly installed by the user, along with their direct dependencies. Users can toggle the visibility of dependencies for each package.
-*   **List All Installed Packages:** Provides a flat list of all packages currently installed on the system.
-*   **Efficient Backend:** Utilizes Rust for backend logic, invoking system package management tools (`dnf`, `rpm`) to fetch package information and parsing its output.
-*   **User Interface:** Modern and responsive UI built with Svelte.
+## Support Matrix
 
-#### Key Features (Recent Enhancements):
+| Manager | Package list | User-installed view | Requirements | Update | Uninstall | Force uninstall |
+| --- | --- | --- | --- | --- | --- | --- |
+| DNF/RPM | Yes | Yes | RPM requirements | Yes | Yes | Yes |
+| APT/dpkg | Yes | Yes | APT dependencies | Yes | Yes | Yes |
+| Snap | Yes | Same as all | Not exposed | Yes | Yes | No |
+| Flatpak | Apps | Same as all | Runtime details | Yes | Yes | No |
 
-*   **Persistent Backend Caching:** User-installed packages and their dependencies are cached in a local JSON file (`package_cache.json`). This makes subsequent application loads and view switches nearly instantaneous.
-*   **Optimized Dependency Resolution:** Uses `rpm -qR <package_name>` for resolving dependencies of installed packages, which is generally faster and lighter than `dnf repoquery --requires` for this purpose.
-*   **Faster "All Installed" List:** Employs `rpm -qa --qf '%{NAME}\n'` for a rapid retrieval of all installed package names.
-*   **Controlled Concurrency:** Limits the number of concurrent `rpm` processes during dependency fetching to prevent system overload and crashes, ensuring stability even with many packages.
-*   **Manual Cache Refresh:** A "Refresh Current View" button allows users to bypass the local cache and fetch fresh package information from the system on demand.
-*   **Responsive UI Caching:** The Svelte frontend also maintains a session cache for quickly re-rendering views.
+## Repository Layout
 
-#### Technical Details:
+```text
+.
+├── nebula-dnf/              # SvelteKit + Tauri desktop app
+│   ├── src/                 # Frontend UI
+│   └── src-tauri/           # Rust backend and Tauri config
+├── docs/                    # Architecture and release process notes
+└── .github/                 # CI, releases, templates
+```
 
-*   **Frontend:**
-    *   Built with Svelte and Vite.
-    *   Located in the `nebula-dnf/src` directory.
-    *   The main UI component is `nebula-dnf/src/routes/+page.svelte`.
-    *   Communicates with the Rust backend using Tauri's `invoke` API.
-*   **Backend (Tauri):**
-    *   Built with Rust.
-    *   Located in the `nebula-dnf/src-tauri` directory.
-    *   Core logic is in `nebula-dnf/src-tauri/src/lib.rs`.
-    *   Exposes Tauri commands (`list_installed_packages`, `list_user_installed_packages`) to the frontend.
-    *   Optimized regular expression handling using `once_cell::sync::Lazy` for performance.
-    *   Features robust parsing of `dnf` command output.
+The app directory is still named `nebula-dnf` for continuity, but the implementation is now multi-manager.
 
----
-please note that this is a hobby project and its a work in progress, also note that currently im only planing to develop the same thing for apt and maybe snaps and flatpacks.
+## Development
+
+Prerequisites:
+
+- Node.js 20+
+- Rust stable and Cargo
+- Linux package-manager CLIs for the managers you want to test
+- Tauri Linux system dependencies
+
+Install frontend dependencies:
+
+```bash
+cd nebula-dnf
+npm ci
+```
+
+Run the frontend checker and build:
+
+```bash
+npm run check
+npm run build
+```
+
+Run Rust tests:
+
+```bash
+cd src-tauri
+cargo test
+```
+
+Run the desktop app:
+
+```bash
+cd nebula-dnf
+npm run tauri dev
+```
+
+## Safety Model
+
+NebulaSys does not expose arbitrary shell execution to the frontend. The Svelte UI calls typed Tauri commands, and the Rust backend chooses the command, validates package identifiers, checks that the target package is installed, and then runs the package-manager command.
+
+Privileged DNF, APT, and Snap mutations use `pkexec`. Flatpak operations run through `flatpak` because user-session installs are common.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for commit conventions, local checks, and pull request expectations.
+
+## Security
+
+Report package-operation safety issues privately. See [SECURITY.md](SECURITY.md).
+
+## License
+
+GPL-3.0-only. See [LICENSE](LICENSE).

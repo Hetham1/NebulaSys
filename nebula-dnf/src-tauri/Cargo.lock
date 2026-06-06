@@ -2143,7 +2143,6 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
- "tauri-plugin-shell",
  "tokio",
  "window-shadows",
 ]
@@ -3771,27 +3770,6 @@ dependencies = [
  "url",
  "windows 0.60.0",
  "zbus",
-]
-
-[[package]]
-name = "tauri-plugin-shell"
-version = "2.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69d5eb3368b959937ad2aeaf6ef9a8f5d11e01ffe03629d3530707bbcb27ff5d"
-dependencies = [
- "encoding_rs",
- "log",
- "open",
- "os_pipe",
- "regex",
- "schemars",
- "serde",
- "serde_json",
- "shared_child",
- "tauri",
- "tauri-plugin",
- "thiserror 2.0.12",
- "tokio",
 ]
 
 [[package]]

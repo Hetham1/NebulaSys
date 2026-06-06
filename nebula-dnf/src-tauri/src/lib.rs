@@ -1,716 +1,1127 @@
-use regex::Regex;
-use serde::{Serialize, Deserialize};
-use tauri_plugin_shell::ShellExt;
-use std::collections::HashSet;
 use once_cell::sync::Lazy;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::Semaphore;
-use tauri::Manager; // Required for app.path()
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::Manager;
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+const CACHE_SCHEMA_VERSION: u8 = 2;
+const CACHE_TTL_SECS: u64 = 300;
 
-const CACHE_FILE_NAME: &str = "package_cache.json";
-const MAX_CONCURRENT_RPM_QUERIES: usize = 5; // Limit concurrent rpm processes
+static PACKAGE_NAME_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._+:@-]{0,199}$").unwrap());
+static NEVRA_NAME_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^(.+)-[0-9][^-]*-.+$").unwrap());
 
-// --- Regex Definitions ---
-// Regex for extracting base package name: captures name part before potential version string.
-// Example: "pkg-name-1.2.3-4.arch" -> Group 1: "pkg-name"
-// Example: "lib-example-1.0" -> Group 1: "lib-example"
-// Example: "nameonly" -> Group 1: "nameonly"
-// Example: "name-devel" (no version like -1.0) -> Group 1: "name-devel"
-static NAME_EXTRACTOR_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^([a-zA-Z0-9][a-zA-Z0-9._+-]*?)(?:-([0-9].*))?$").unwrap()
-});
-
-// Regexes for parsing deplist output
-static PACKAGE_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^package:\s*(.+)").unwrap());
-static PROVIDER_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\s+provider:\s*(.+)").unwrap());
-
-// --- Struct Definitions ---
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
-pub struct DisplayablePackage {
-    name: String,
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum PackageManagerId {
+    Dnf,
+    Apt,
+    Snap,
+    Flatpak,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)] // Added PartialEq, Eq, Hash for potential future use
-pub enum PackageCategory {
-    Manual,
-    DesktopEnvironment,
-    System,
-    Library,
-    Development,
-    Multimedia,
-    Office,
-    Games,
-    Utility,
-    Network,
-    Security,
-    OtherApplication, // For other apps not fitting above
-    Unknown,
-}
+impl PackageManagerId {
+    fn as_str(self) -> &'static str {
+        match self {
+            PackageManagerId::Dnf => "dnf",
+            PackageManagerId::Apt => "apt",
+            PackageManagerId::Snap => "snap",
+            PackageManagerId::Flatpak => "flatpak",
+        }
+    }
 
-impl Default for PackageCategory {
-    fn default() -> Self {
-        PackageCategory::Unknown
+    fn label(self) -> &'static str {
+        match self {
+            PackageManagerId::Dnf => "DNF",
+            PackageManagerId::Apt => "APT",
+            PackageManagerId::Snap => "Snap",
+            PackageManagerId::Flatpak => "Flatpak",
+        }
+    }
+
+    fn executable(self) -> &'static str {
+        match self {
+            PackageManagerId::Dnf => "dnf",
+            PackageManagerId::Apt => "apt-get",
+            PackageManagerId::Snap => "snap",
+            PackageManagerId::Flatpak => "flatpak",
+        }
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PackageView {
+    User,
+    All,
+}
+
+impl PackageView {
+    fn as_str(self) -> &'static str {
+        match self {
+            PackageView::User => "user",
+            PackageView::All => "all",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PackageOperation {
+    Update,
+    Uninstall,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct UserPackageWithDependencies {
+pub struct ManagerStatus {
+    id: PackageManagerId,
+    label: String,
+    installed: bool,
+    executable: String,
+    version: Option<String>,
+    notes: String,
+    supports_user_installed: bool,
+    supports_dependencies: bool,
+    supports_update: bool,
+    supports_uninstall: bool,
+    supports_force_uninstall: bool,
+    supports_cleanup_orphans: bool,
+    requires_privilege: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PackageInfo {
+    manager: PackageManagerId,
     name: String,
-    category: PackageCategory, // New field
-    dependencies: Vec<DisplayablePackage>,
+    display_name: String,
+    version: Option<String>,
+    category: String,
+    summary: Option<String>,
+    source: String,
+    dependencies: Vec<DependencyInfo>,
+    dependencies_loaded: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
+pub struct DependencyInfo {
+    name: String,
+    kind: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PackageOperationArgs {
+    manager: PackageManagerId,
+    package_name: String,
+    operation: PackageOperation,
+    dry_run: bool,
+    force: bool,
+    cleanup_orphans: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PackageOperationResult {
     success: bool,
-    message: String,      // User-facing summary. For dry run, this could be a preamble.
-    details: Option<String>, // For verbose output like dry run text or full dnf output.
+    message: String,
+    details: Option<String>,
+    command: Option<String>,
+    dry_run: bool,
 }
 
-// Enum for different uninstall modes
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
-pub enum UninstallMode {
-    Safe,      // Actual removal: dnf remove <pkg> -y
-    Force,     // Actual removal: rpm -e --nodeps <pkg>
-    DryRunSafe,// dnf remove <pkg> --assumeno
-    DryRunForce, // rpm -e --nodeps <pkg> --test
-}
-
-// Struct for uninstall arguments
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct UninstallArgs {
-    package_name: String,
-    mode: UninstallMode,
-    cleanup_orphans: bool, // Only relevant for Safe/DryRunSafe modes
+struct PackageCacheEntry {
+    schema_version: u8,
+    generated_at: u64,
+    manager: PackageManagerId,
+    view: PackageView,
+    packages: Vec<PackageInfo>,
 }
 
-// --- Helper Functions ---
-// Helper function to extract base package name from a full NEVRA or similar string
-fn extract_base_package_name(full_spec: &str) -> String {
-    let trimmed_spec = full_spec.trim();
-    // RPM requirements can be file paths or complex strings, try to simplify common ones.
-    if trimmed_spec.starts_with('/') { // like /bin/sh
-        if let Some(file_name) = std::path::Path::new(trimmed_spec).file_name().and_then(|n| n.to_str()) {
-            return file_name.to_string();
-        }
-    }
-    // Handle cases like "rpmlib(VersionedDependencies)" -> "rpmlib"
-    if let Some(cap_idx) = trimmed_spec.find('(') {
-        if !trimmed_spec.starts_with("perl(") { // perl(Foo::Bar) should be kept as is for uniqueness
-             return trimmed_spec[..cap_idx].to_string();
-        }
-    }
-    if let Some(caps) = NAME_EXTRACTOR_RE.captures(trimmed_spec) {
-        if let Some(name) = caps.get(1) {
-            return name.as_str().to_string();
-        }
-    }
-    trimmed_spec.to_string()
+#[derive(Debug)]
+struct CommandOutput {
+    code: i32,
+    stdout: String,
+    stderr: String,
 }
 
-// Renamed function from parse_requires_output to parse_rpm_requires_output
-fn parse_rpm_requires_output(output: &str, main_pkg_base_name_for_context: &str) -> Vec<DisplayablePackage> {
-    println!(
-        "--- Parsing `rpm -qR` output for [{}] ---\n{}\n--- End `rpm -qR` output for [{}] ---",
-        main_pkg_base_name_for_context, output, main_pkg_base_name_for_context
-    );
+fn current_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
-    let mut deps = HashSet::new(); // Use HashSet to avoid duplicate deps
-
-    for line in output.lines() {
-        let dep_spec = line.trim();
-        if !dep_spec.is_empty() && !dep_spec.starts_with("Last metadata expiration check:") {
-            let dep_base_name = extract_base_package_name(dep_spec);
-            println!(
-                "  Found requirement spec: '{}', Extracted base name: '{}'",
-                dep_spec,
-                dep_base_name
-            );
-            // Avoid adding the package itself as its own dependency
-            if dep_base_name != main_pkg_base_name_for_context {
-                deps.insert(DisplayablePackage { name: dep_base_name });
-            }
+fn executable_in_path(name: &str) -> Option<String> {
+    let paths = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&paths) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().to_string());
         }
     }
-    let mut deps_vec: Vec<DisplayablePackage> = deps.into_iter().collect();
-    deps_vec.sort_by(|a, b| a.name.cmp(&b.name));
-    deps_vec
+    None
 }
 
-fn get_cache_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    app.path().app_local_data_dir()
-        .map(|p| p.join(CACHE_FILE_NAME))
-        .map_err(|e| format!("Failed to get app local data directory path: {}", e))
+fn validate_package_name(package_name: &str) -> Result<(), String> {
+    if PACKAGE_NAME_RE.is_match(package_name) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Package name '{}' is not a supported package identifier.",
+            package_name
+        ))
+    }
 }
 
-fn load_cache(app: &tauri::AppHandle) -> Result<Option<Vec<UserPackageWithDependencies>>, String> {
-    let cache_path = get_cache_path(app)?;
-    if cache_path.exists() {
-        let mut file = File::open(cache_path).map_err(|e| format!("Failed to open cache file: {}", e))?;
-        let mut contents = String::new();
-        file.read_to_string(&mut contents).map_err(|e| format!("Failed to read cache file: {}", e))?;
-        if contents.is_empty() {
-             return Ok(None); // Cache file is empty
-        }
-        serde_json::from_str(&contents)
-            .map_err(|e| format!("Failed to deserialize cache: {}. Cache file might be corrupted.", e))
-            .map(Some)
+fn command_output(command: &str, args: Vec<String>) -> Result<CommandOutput, String> {
+    let output = Command::new(command)
+        .args(&args)
+        .env("LC_ALL", "C")
+        .output()
+        .map_err(|e| format!("Failed to execute '{}': {}", command, e))?;
+
+    Ok(CommandOutput {
+        code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
+async fn run_command(command: &str, args: Vec<String>) -> Result<CommandOutput, String> {
+    let command = command.to_string();
+    tauri::async_runtime::spawn_blocking(move || command_output(&command, args))
+        .await
+        .map_err(|e| format!("Command task failed: {}", e))?
+}
+
+fn command_line(command: &str, args: &[String]) -> String {
+    if args.is_empty() {
+        command.to_string()
+    } else {
+        format!("{} {}", command, args.join(" "))
+    }
+}
+
+fn command_details(command: &str, args: &[String], output: &CommandOutput) -> String {
+    format!(
+        "Command: {}\nExit code: {}\n\nSTDOUT:\n{}\n\nSTDERR:\n{}",
+        command_line(command, args),
+        output.code,
+        output.stdout.trim(),
+        output.stderr.trim()
+    )
+}
+
+fn cache_path(app: &tauri::AppHandle, manager: PackageManagerId, view: PackageView) -> Result<PathBuf, String> {
+    app.path()
+        .app_local_data_dir()
+        .map(|p| {
+            p.join(format!(
+                "package_cache_v{}_{}_{}.json",
+                CACHE_SCHEMA_VERSION,
+                manager.as_str(),
+                view.as_str()
+            ))
+        })
+        .map_err(|e| format!("Failed to get app local data directory: {}", e))
+}
+
+fn load_package_cache(
+    app: &tauri::AppHandle,
+    manager: PackageManagerId,
+    view: PackageView,
+) -> Result<Option<Vec<PackageInfo>>, String> {
+    let path = cache_path(app, manager, view)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let mut file = File::open(&path).map_err(|e| format!("Failed to open cache file: {}", e))?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .map_err(|e| format!("Failed to read cache file: {}", e))?;
+    if contents.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let entry: PackageCacheEntry = serde_json::from_str(&contents)
+        .map_err(|e| format!("Failed to parse package cache: {}", e))?;
+
+    let fresh = current_unix_secs().saturating_sub(entry.generated_at) <= CACHE_TTL_SECS;
+    if entry.schema_version == CACHE_SCHEMA_VERSION
+        && entry.manager == manager
+        && entry.view == view
+        && fresh
+    {
+        Ok(Some(entry.packages))
     } else {
         Ok(None)
     }
 }
 
-fn save_cache(app: &tauri::AppHandle, data: &Vec<UserPackageWithDependencies>) -> Result<(), String> {
-    let cache_path = get_cache_path(app)?;
-    if let Some(parent_dir) = cache_path.parent() {
-        fs::create_dir_all(parent_dir).map_err(|e| format!("Failed to create cache directory: {}", e))?;
+fn save_package_cache(
+    app: &tauri::AppHandle,
+    manager: PackageManagerId,
+    view: PackageView,
+    packages: &[PackageInfo],
+) -> Result<(), String> {
+    let path = cache_path(app, manager, view)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create cache directory: {}", e))?;
     }
-    let mut file = File::create(cache_path).map_err(|e| format!("Failed to create cache file: {}", e))?;
-    let json_data = serde_json::to_string_pretty(data).map_err(|e| format!("Failed to serialize data: {}", e))?;
-    file.write_all(json_data.as_bytes()).map_err(|e| format!("Failed to write to cache file: {}", e))
+
+    let entry = PackageCacheEntry {
+        schema_version: CACHE_SCHEMA_VERSION,
+        generated_at: current_unix_secs(),
+        manager,
+        view,
+        packages: packages.to_vec(),
+    };
+
+    let json = serde_json::to_string_pretty(&entry)
+        .map_err(|e| format!("Failed to serialize package cache: {}", e))?;
+    let mut file = File::create(path).map_err(|e| format!("Failed to create cache file: {}", e))?;
+    file.write_all(json.as_bytes())
+        .map_err(|e| format!("Failed to write cache file: {}", e))
 }
 
-// Helper function to get package category based on RPM group
-async fn get_package_category(shell: &tauri_plugin_shell::Shell<tauri::Wry>, package_name: &str) -> PackageCategory {
-    let output_result = shell
-        .command("rpm")
-        .args(["-q", "--qf", "%{GROUP}\n", package_name])
-        .output()
-        .await;
+fn clear_manager_cache(app: &tauri::AppHandle, manager: PackageManagerId) {
+    let Ok(dir) = app.path().app_local_data_dir() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let prefix = format!("package_cache_v{}_{}", CACHE_SCHEMA_VERSION, manager.as_str());
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if file_name.starts_with(&prefix) && file_name.ends_with(".json") {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
 
-    match output_result {
-        Ok(output_val) => {
-            if output_val.status.success() {
-                let group_str = String::from_utf8_lossy(&output_val.stdout).trim().to_lowercase();
-                // println!("Package: {}, RPM Group: '{}'", package_name, group_str);
+fn manager_note(manager: PackageManagerId) -> &'static str {
+    match manager {
+        PackageManagerId::Dnf => "Fedora/RHEL packages from DNF and RPM.",
+        PackageManagerId::Apt => "Debian/Ubuntu packages from APT and dpkg.",
+        PackageManagerId::Snap => "Snap applications. Snap does not expose manual/dependency data like distro package managers.",
+        PackageManagerId::Flatpak => "Flatpak applications. User and all views are equivalent for app listings.",
+    }
+}
 
-                if group_str.is_empty() || group_str.contains("not installed") || group_str.contains("no such file") {
-                    return PackageCategory::Unknown; // Package might have been removed or is a virtual package
-                }
+async fn manager_version(manager: PackageManagerId) -> Option<String> {
+    let command = manager.executable();
+    let args = match manager {
+        PackageManagerId::Dnf => vec!["--version".to_string()],
+        PackageManagerId::Apt => vec!["--version".to_string()],
+        PackageManagerId::Snap => vec!["version".to_string()],
+        PackageManagerId::Flatpak => vec!["--version".to_string()],
+    };
 
-                // More specific checks first
-                if group_str.contains("desktop environment") || group_str.contains("desktops") || group_str.contains("xfce") || group_str.contains("kde") || group_str.contains("gnome") {
-                    return PackageCategory::DesktopEnvironment;
-                }
-                if group_str.starts_with("system environment/base") || group_str.starts_with("system environment/kernel") || group_str == "system environment" {
-                    return PackageCategory::System;
-                }
-                if group_str.contains("games") {
-                    return PackageCategory::Games;
-                }
-                if group_str.contains("multimedia") || group_str.contains("sound") || group_str.contains("video") {
-                    return PackageCategory::Multimedia;
-                }
-                if group_str.contains("office") || group_str.contains("productivity") {
-                    return PackageCategory::Office;
-                }
-                 if group_str.contains("network") || group_str.contains("web") || group_str.contains("mail") {
-                    return PackageCategory::Network;
-                }
-                if group_str.contains("security") || group_str.contains("firewall") {
-                    return PackageCategory::Security;
-                }
-                 // General application categories
-                if group_str.starts_with("applications/") {
-                    if group_str.contains("development") || group_str.contains("debugging") {
-                        return PackageCategory::Development;
-                    }
-                    if group_str.contains("utilities") {
-                        return PackageCategory::Utility;
-                    }
-                     // Catch-all for other things under "applications/"
-                    return PackageCategory::OtherApplication; 
-                }
-                if group_str.starts_with("development/") {
-                    return PackageCategory::Development;
-                }
-                // Libraries are often harder to distinguish from system components if not explicitly categorized
-                if group_str.contains("libraries") || group_str.ends_with("lib") || group_str.contains("shared libraries") {
-                    return PackageCategory::Library;
-                }
-                // If it's user installed but doesn't fit above, lean towards Manual or OtherApplication
-                // For now, let's assume if it's in dnf userinstalled and not clearly system/DE/library, it was somewhat manual.
-                // This is a heuristic and might need refinement.
-                if !group_str.starts_with("system environment/") { // Avoid re-classifying things already potentially System
-                    return PackageCategory::Manual; 
-                }
-                
-                PackageCategory::Unknown
-            } else {
-                // e.g. package not found by rpm, or rpm command error
-                // eprintln!("RPM query for group failed for {}: Status {}, Stderr: {}", 
-                //     package_name, 
-                //     output_val.status.code().unwrap_or(-1),
-                //     String::from_utf8_lossy(&output_val.stderr).trim()
-                // );
-                PackageCategory::Unknown
+    let Ok(output) = run_command(command, args).await else {
+        return None;
+    };
+    if output.code != 0 {
+        return None;
+    }
+    output
+        .stdout
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(String::from)
+}
+
+fn manager_status_template(manager: PackageManagerId, installed: bool, version: Option<String>) -> ManagerStatus {
+    ManagerStatus {
+        id: manager,
+        label: manager.label().to_string(),
+        installed,
+        executable: manager.executable().to_string(),
+        version,
+        notes: manager_note(manager).to_string(),
+        supports_user_installed: !matches!(manager, PackageManagerId::Snap | PackageManagerId::Flatpak),
+        supports_dependencies: !matches!(manager, PackageManagerId::Snap),
+        supports_update: true,
+        supports_uninstall: true,
+        supports_force_uninstall: matches!(manager, PackageManagerId::Dnf | PackageManagerId::Apt),
+        supports_cleanup_orphans: matches!(manager, PackageManagerId::Dnf | PackageManagerId::Apt),
+        requires_privilege: !matches!(manager, PackageManagerId::Flatpak),
+    }
+}
+
+fn normalize_category(category: &str) -> String {
+    let trimmed = category.trim();
+    if trimmed.is_empty() || trimmed == "(none)" {
+        return "Uncategorized".to_string();
+    }
+
+    let lowered = trimmed.to_lowercase();
+    if lowered.contains("desktop") {
+        "Desktop Environment".to_string()
+    } else if lowered.contains("admin") || lowered.contains("system") || lowered.contains("kernel") {
+        "System".to_string()
+    } else if lowered.contains("devel") || lowered.contains("programming") {
+        "Development".to_string()
+    } else if lowered.contains("libs") || lowered.contains("library") {
+        "Library".to_string()
+    } else if lowered.contains("net") || lowered.contains("web") || lowered.contains("mail") {
+        "Network".to_string()
+    } else if lowered.contains("sound") || lowered.contains("video") || lowered.contains("graphics") {
+        "Multimedia".to_string()
+    } else if lowered.contains("game") {
+        "Games".to_string()
+    } else if lowered.contains("security") {
+        "Security".to_string()
+    } else if lowered.contains("utility") || lowered.contains("utils") {
+        "Utility".to_string()
+    } else {
+        trimmed
+            .split('/')
+            .next()
+            .unwrap_or(trimmed)
+            .replace('-', " ")
+            .trim()
+            .to_string()
+    }
+}
+
+fn extract_package_name(candidate: &str) -> String {
+    let trimmed = candidate.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    for arch in [".x86_64", ".aarch64", ".noarch", ".i686", ".armv7hl"] {
+        if let Some(stripped) = trimmed.strip_suffix(arch) {
+            if !stripped.contains('-') {
+                return stripped.to_string();
             }
         }
-        Err(_e) => {
-            // eprintln!("Failed to execute rpm query for group of {}: {}", package_name, e);
-            PackageCategory::Unknown
+    }
+
+    if let Some(caps) = NEVRA_NAME_RE.captures(trimmed) {
+        return caps
+            .get(1)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_else(|| trimmed.to_string());
+    }
+
+    trimmed.to_string()
+}
+
+fn split_tsv(line: &str) -> Vec<&str> {
+    line.split('\t').map(str::trim).collect()
+}
+
+async fn list_dnf_packages(view: PackageView) -> Result<Vec<PackageInfo>, String> {
+    let rpm_args = vec![
+        "-qa".to_string(),
+        "--queryformat".to_string(),
+        "%{NAME}\t%{VERSION}-%{RELEASE}.%{ARCH}\t%{SUMMARY}\t%{GROUP}\n".to_string(),
+    ];
+    let rpm_output = run_command("rpm", rpm_args).await?;
+    if rpm_output.code != 0 {
+        return Err(format!("rpm package query failed: {}", rpm_output.stderr.trim()));
+    }
+
+    let mut packages = Vec::new();
+    for line in rpm_output.stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let fields = split_tsv(line);
+        let name = fields.get(0).copied().unwrap_or_default().to_string();
+        if name.is_empty() {
+            continue;
         }
+
+        packages.push(PackageInfo {
+            manager: PackageManagerId::Dnf,
+            display_name: name.clone(),
+            name,
+            version: fields
+                .get(1)
+                .map(|v| v.to_string())
+                .filter(|v| !v.is_empty()),
+            summary: fields
+                .get(2)
+                .map(|v| v.to_string())
+                .filter(|v| !v.is_empty() && v.as_str() != "(none)"),
+            category: normalize_category(fields.get(3).copied().unwrap_or_default()),
+            source: "rpmdb".to_string(),
+            dependencies: Vec::new(),
+            dependencies_loaded: false,
+        });
+    }
+
+    if view == PackageView::User {
+        let manual_args = vec![
+            "repoquery".to_string(),
+            "--userinstalled".to_string(),
+            "--quiet".to_string(),
+            "--queryformat".to_string(),
+            "%{name}".to_string(),
+        ];
+        let manual_output = match run_command("dnf", manual_args).await {
+            Ok(output) if output.code == 0 => output,
+            _ => {
+                let fallback_args = vec![
+                    "repoquery".to_string(),
+                    "--userinstalled".to_string(),
+                    "--quiet".to_string(),
+                ];
+                let output = run_command("dnf", fallback_args).await?;
+                if output.code != 0 {
+                    return Err(format!(
+                        "dnf user-installed query failed: {}",
+                        output.stderr.trim()
+                    ));
+                }
+                output
+            }
+        };
+
+        let manual_set: HashSet<String> = manual_output
+            .stdout
+            .lines()
+            .map(extract_package_name)
+            .filter(|name| !name.is_empty())
+            .collect();
+
+        packages.retain(|package| manual_set.contains(&package.name));
+        for package in &mut packages {
+            package.source = "dnf manual".to_string();
+        }
+    }
+
+    packages.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(packages)
+}
+
+async fn list_apt_packages(view: PackageView) -> Result<Vec<PackageInfo>, String> {
+    let query_args = vec![
+        "-W".to_string(),
+        "-f=${Package}\t${Version}\t${db:Status-Abbrev}\t${Section}\n".to_string(),
+    ];
+    let output = run_command("dpkg-query", query_args).await?;
+    if output.code != 0 {
+        return Err(format!("dpkg-query failed: {}", output.stderr.trim()));
+    }
+
+    let mut packages = Vec::new();
+    for line in output.stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let fields = split_tsv(line);
+        let status = fields.get(2).copied().unwrap_or_default();
+        if !status.starts_with("ii") {
+            continue;
+        }
+        let name = fields.get(0).copied().unwrap_or_default().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        packages.push(PackageInfo {
+            manager: PackageManagerId::Apt,
+            display_name: name.clone(),
+            name,
+            version: fields
+                .get(1)
+                .map(|v| v.to_string())
+                .filter(|v| !v.is_empty()),
+            category: normalize_category(fields.get(3).copied().unwrap_or_default()),
+            summary: None,
+            source: "dpkg".to_string(),
+            dependencies: Vec::new(),
+            dependencies_loaded: false,
+        });
+    }
+
+    if view == PackageView::User {
+        let manual_output = run_command("apt-mark", vec!["showmanual".to_string()]).await?;
+        if manual_output.code != 0 {
+            return Err(format!(
+                "apt-mark showmanual failed: {}",
+                manual_output.stderr.trim()
+            ));
+        }
+        let manual_set: HashSet<String> = manual_output
+            .stdout
+            .lines()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(String::from)
+            .collect();
+        packages.retain(|package| manual_set.contains(&package.name));
+        for package in &mut packages {
+            package.source = "apt manual".to_string();
+        }
+    }
+
+    packages.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(packages)
+}
+
+async fn list_snap_packages(_view: PackageView) -> Result<Vec<PackageInfo>, String> {
+    let output = run_command("snap", vec!["list".to_string()]).await?;
+    if output.code != 0 {
+        return Err(format!("snap list failed: {}", output.stderr.trim()));
+    }
+
+    let mut packages = Vec::new();
+    for (index, line) in output.stdout.lines().enumerate() {
+        if index == 0 || line.trim().is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let name = fields.get(0).copied().unwrap_or_default().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        packages.push(PackageInfo {
+            manager: PackageManagerId::Snap,
+            display_name: name.clone(),
+            name,
+            version: fields.get(1).map(|v| v.to_string()).filter(|v| !v.is_empty()),
+            category: "Snap".to_string(),
+            summary: None,
+            source: "snap".to_string(),
+            dependencies: Vec::new(),
+            dependencies_loaded: true,
+        });
+    }
+
+    packages.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(packages)
+}
+
+async fn list_flatpak_packages(_view: PackageView) -> Result<Vec<PackageInfo>, String> {
+    let args = vec![
+        "list".to_string(),
+        "--app".to_string(),
+        "--columns=application,name,version,origin".to_string(),
+    ];
+    let output = run_command("flatpak", args).await?;
+    if output.code != 0 {
+        return Err(format!("flatpak list failed: {}", output.stderr.trim()));
+    }
+
+    let mut packages = Vec::new();
+    for line in output.stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let fields = split_tsv(line);
+        let app_id = fields.get(0).copied().unwrap_or_default().to_string();
+        if app_id.is_empty() {
+            continue;
+        }
+        let display_name = fields
+            .get(1)
+            .map(|v| v.to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| app_id.clone());
+        packages.push(PackageInfo {
+            manager: PackageManagerId::Flatpak,
+            name: app_id,
+            display_name,
+            version: fields
+                .get(2)
+                .map(|v| v.to_string())
+                .filter(|v| !v.is_empty()),
+            category: "Flatpak App".to_string(),
+            summary: fields
+                .get(3)
+                .map(|origin| format!("Origin: {}", origin))
+                .filter(|v| !v.ends_with(": ")),
+            source: "flatpak".to_string(),
+            dependencies: Vec::new(),
+            dependencies_loaded: false,
+        });
+    }
+
+    packages.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+    Ok(packages)
+}
+
+fn parse_requirement_name(line: &str) -> String {
+    let mut value = line.trim().to_string();
+    for marker in [" >= ", " <= ", " = ", " > ", " < "] {
+        if let Some((name, _)) = value.split_once(marker) {
+            value = name.trim().to_string();
+            break;
+        }
+    }
+    if let Some((name, _)) = value.split_once('(') {
+        if !value.starts_with("perl(") {
+            return name.trim().to_string();
+        }
+    }
+    value
+}
+
+fn parse_apt_dependency_line(line: &str) -> Option<DependencyInfo> {
+    let trimmed = line.trim();
+    let (kind, rest) = trimmed.split_once(':')?;
+    let kind = kind.trim();
+    if !matches!(kind, "PreDepends" | "Depends" | "Recommends" | "Suggests") {
+        return None;
+    }
+    let mut name = rest.trim();
+    if name.starts_with('<') && name.ends_with('>') {
+        name = name.trim_matches(['<', '>'].as_ref());
+    }
+    if let Some((base, _version)) = name.split_once(' ') {
+        name = base;
+    }
+    if name.is_empty() {
+        None
+    } else {
+        Some(DependencyInfo {
+            name: name.to_string(),
+            kind: kind.to_string(),
+        })
     }
 }
 
-// --- Tauri Commands ---
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
+async fn dependencies_for_package(
+    manager: PackageManagerId,
+    package_name: &str,
+) -> Result<Vec<DependencyInfo>, String> {
+    validate_package_name(package_name)?;
 
-#[tauri::command]
-async fn list_installed_packages(app: tauri::AppHandle) -> Result<Vec<DisplayablePackage>, String> {
-    println!("Attempting to list all installed packages using 'rpm -qa'.");
-    let shell = app.shell();
-    let output_result = shell
-        .command("rpm")
-        .args(["-qa"]) // Changed from dnf list installed
-        .output()
-        .await;
+    let mut dependencies = HashSet::new();
 
-    match output_result {
-        Ok(output_val) => {
-            if output_val.status.success() {
-                let stdout_str = String::from_utf8_lossy(&output_val.stdout);
-                let unique_base_names: HashSet<String> = stdout_str
-                    .lines()
-                    // .skip(1) // Removed skip(1) as rpm -qa has no header
-                    .map(str::trim)
-                    .filter(|line| !line.is_empty())
-                    .map(|line| {
-                        // rpm -qa output is typically 'name-version-release.arch'
-                        // extract_base_package_name can handle this
-                        extract_base_package_name(line)
-                    })
-                    .filter(|name| !name.is_empty())
-                    .collect();
-                
-                let mut packages: Vec<DisplayablePackage> = unique_base_names
-                    .into_iter()
-                    .map(|name| DisplayablePackage { name })
-                    .collect();
-                
-                packages.sort_by(|a, b| a.name.cmp(&b.name));
-                Ok(packages)
-            } else {
-                let stderr_str = String::from_utf8_lossy(&output_val.stderr);
-                Err(format!(
-                    "rpm -qa command failed with status {}: {}", // Correctly blames rpm -qa
-                    output_val.status.code().unwrap_or(-1),
-                    stderr_str
-                ))
+    match manager {
+        PackageManagerId::Dnf => {
+            let output = run_command("rpm", vec!["-qR".to_string(), package_name.to_string()]).await?;
+            if output.code != 0 {
+                return Err(format!("rpm requirement query failed: {}", output.stderr.trim()));
+            }
+            for line in output.stdout.lines().filter(|line| !line.trim().is_empty()) {
+                let name = parse_requirement_name(line);
+                if !name.is_empty() && name != package_name {
+                    dependencies.insert(DependencyInfo {
+                        name,
+                        kind: "Requirement".to_string(),
+                    });
+                }
             }
         }
-        Err(e) => Err(format!("Failed to execute rpm -qa command: {}", e)), // Correctly blames rpm -qa
+        PackageManagerId::Apt => {
+            let output = run_command(
+                "apt-cache",
+                vec![
+                    "depends".to_string(),
+                    "--installed".to_string(),
+                    package_name.to_string(),
+                ],
+            )
+            .await?;
+            if output.code != 0 {
+                return Err(format!("apt-cache dependency query failed: {}", output.stderr.trim()));
+            }
+            for line in output.stdout.lines() {
+                if let Some(dep) = parse_apt_dependency_line(line) {
+                    if dep.name != package_name {
+                        dependencies.insert(dep);
+                    }
+                }
+            }
+        }
+        PackageManagerId::Snap => {}
+        PackageManagerId::Flatpak => {
+            let output = run_command("flatpak", vec!["info".to_string(), package_name.to_string()]).await?;
+            if output.code != 0 {
+                return Err(format!("flatpak info failed: {}", output.stderr.trim()));
+            }
+            for line in output.stdout.lines() {
+                let trimmed = line.trim();
+                for prefix in ["Runtime:", "Sdk:"] {
+                    if let Some(value) = trimmed.strip_prefix(prefix) {
+                        let name = value.trim();
+                        if !name.is_empty() {
+                            dependencies.insert(DependencyInfo {
+                                name: name.to_string(),
+                                kind: prefix.trim_end_matches(':').to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut result: Vec<DependencyInfo> = dependencies.into_iter().collect();
+    result.sort_by(|a, b| a.name.cmp(&b.name).then(a.kind.cmp(&b.kind)));
+    Ok(result)
+}
+
+async fn package_is_installed(manager: PackageManagerId, package_name: &str) -> Result<bool, String> {
+    validate_package_name(package_name)?;
+    let (command, args) = match manager {
+        PackageManagerId::Dnf => ("rpm", vec!["-q".to_string(), package_name.to_string()]),
+        PackageManagerId::Apt => (
+            "dpkg-query",
+            vec![
+                "-W".to_string(),
+                "-f=${Status}".to_string(),
+                package_name.to_string(),
+            ],
+        ),
+        PackageManagerId::Snap => ("snap", vec!["list".to_string(), package_name.to_string()]),
+        PackageManagerId::Flatpak => ("flatpak", vec!["info".to_string(), package_name.to_string()]),
+    };
+
+    let output = run_command(command, args).await?;
+    if output.code != 0 {
+        return Ok(false);
+    }
+    if manager == PackageManagerId::Apt {
+        Ok(output.stdout.contains("install ok installed"))
+    } else {
+        Ok(true)
+    }
+}
+
+fn unsupported_preview_result(manager: PackageManagerId, operation: PackageOperation) -> PackageOperationResult {
+    let operation_label = match operation {
+        PackageOperation::Update => "update",
+        PackageOperation::Uninstall => "uninstall",
+    };
+    PackageOperationResult {
+        success: true,
+        message: format!(
+            "{} does not expose a reliable dry-run command for {}. No changes were made.",
+            manager.label(),
+            operation_label
+        ),
+        details: Some("This manager requires an actual command for this operation.".to_string()),
+        command: None,
+        dry_run: true,
+    }
+}
+
+fn operation_command(args: &PackageOperationArgs) -> Result<(String, Vec<String>), String> {
+    if args.dry_run {
+        return match (args.manager, args.operation, args.force) {
+            (PackageManagerId::Dnf, PackageOperation::Update, _) => Ok((
+                "dnf".to_string(),
+                vec![
+                    "upgrade".to_string(),
+                    args.package_name.clone(),
+                    "--assumeno".to_string(),
+                ],
+            )),
+            (PackageManagerId::Dnf, PackageOperation::Uninstall, false) => Ok((
+                "dnf".to_string(),
+                vec![
+                    "remove".to_string(),
+                    args.package_name.clone(),
+                    "--assumeno".to_string(),
+                ],
+            )),
+            (PackageManagerId::Dnf, PackageOperation::Uninstall, true) => Ok((
+                "rpm".to_string(),
+                vec![
+                    "-e".to_string(),
+                    "--nodeps".to_string(),
+                    "--test".to_string(),
+                    args.package_name.clone(),
+                ],
+            )),
+            (PackageManagerId::Apt, PackageOperation::Update, _) => Ok((
+                "apt-get".to_string(),
+                vec![
+                    "-s".to_string(),
+                    "install".to_string(),
+                    "--only-upgrade".to_string(),
+                    args.package_name.clone(),
+                ],
+            )),
+            (PackageManagerId::Apt, PackageOperation::Uninstall, false) => Ok((
+                "apt-get".to_string(),
+                vec!["-s".to_string(), "remove".to_string(), args.package_name.clone()],
+            )),
+            (PackageManagerId::Apt, PackageOperation::Uninstall, true) => Ok((
+                "dpkg".to_string(),
+                vec![
+                    "--remove".to_string(),
+                    "--force-depends".to_string(),
+                    "--dry-run".to_string(),
+                    args.package_name.clone(),
+                ],
+            )),
+            (PackageManagerId::Snap, _, _) => Err("unsupported-dry-run".to_string()),
+            (PackageManagerId::Flatpak, PackageOperation::Update, _) => Ok((
+                "flatpak".to_string(),
+                vec![
+                    "update".to_string(),
+                    "--dry-run".to_string(),
+                    args.package_name.clone(),
+                ],
+            )),
+            (PackageManagerId::Flatpak, PackageOperation::Uninstall, _) => Ok((
+                "flatpak".to_string(),
+                vec![
+                    "uninstall".to_string(),
+                    "--dry-run".to_string(),
+                    args.package_name.clone(),
+                ],
+            )),
+        };
+    }
+
+    if matches!(args.manager, PackageManagerId::Dnf | PackageManagerId::Apt | PackageManagerId::Snap)
+        && executable_in_path("pkexec").is_none()
+    {
+        return Err("pkexec is required for privileged package operations but was not found.".to_string());
+    }
+
+    match (args.manager, args.operation, args.force) {
+        (PackageManagerId::Dnf, PackageOperation::Update, _) => Ok((
+            "pkexec".to_string(),
+            vec![
+                "dnf".to_string(),
+                "upgrade".to_string(),
+                args.package_name.clone(),
+                "--assumeyes".to_string(),
+            ],
+        )),
+        (PackageManagerId::Dnf, PackageOperation::Uninstall, false) => Ok((
+            "pkexec".to_string(),
+            vec![
+                "dnf".to_string(),
+                "remove".to_string(),
+                args.package_name.clone(),
+                "--assumeyes".to_string(),
+            ],
+        )),
+        (PackageManagerId::Dnf, PackageOperation::Uninstall, true) => Ok((
+            "pkexec".to_string(),
+            vec![
+                "rpm".to_string(),
+                "-e".to_string(),
+                "--nodeps".to_string(),
+                args.package_name.clone(),
+            ],
+        )),
+        (PackageManagerId::Apt, PackageOperation::Update, _) => Ok((
+            "pkexec".to_string(),
+            vec![
+                "apt-get".to_string(),
+                "install".to_string(),
+                "--only-upgrade".to_string(),
+                "-y".to_string(),
+                args.package_name.clone(),
+            ],
+        )),
+        (PackageManagerId::Apt, PackageOperation::Uninstall, false) => Ok((
+            "pkexec".to_string(),
+            vec![
+                "apt-get".to_string(),
+                "remove".to_string(),
+                "-y".to_string(),
+                args.package_name.clone(),
+            ],
+        )),
+        (PackageManagerId::Apt, PackageOperation::Uninstall, true) => Ok((
+            "pkexec".to_string(),
+            vec![
+                "dpkg".to_string(),
+                "--remove".to_string(),
+                "--force-depends".to_string(),
+                args.package_name.clone(),
+            ],
+        )),
+        (PackageManagerId::Snap, PackageOperation::Update, _) => Ok((
+            "pkexec".to_string(),
+            vec!["snap".to_string(), "refresh".to_string(), args.package_name.clone()],
+        )),
+        (PackageManagerId::Snap, PackageOperation::Uninstall, _) => Ok((
+            "pkexec".to_string(),
+            vec!["snap".to_string(), "remove".to_string(), args.package_name.clone()],
+        )),
+        (PackageManagerId::Flatpak, PackageOperation::Update, _) => Ok((
+            "flatpak".to_string(),
+            vec!["update".to_string(), "-y".to_string(), args.package_name.clone()],
+        )),
+        (PackageManagerId::Flatpak, PackageOperation::Uninstall, _) => Ok((
+            "flatpak".to_string(),
+            vec!["uninstall".to_string(), "-y".to_string(), args.package_name.clone()],
+        )),
+    }
+}
+
+async fn cleanup_orphans(manager: PackageManagerId) -> Result<Option<String>, String> {
+    let (command, args) = match manager {
+        PackageManagerId::Dnf => (
+            "pkexec",
+            vec!["dnf".to_string(), "autoremove".to_string(), "--assumeyes".to_string()],
+        ),
+        PackageManagerId::Apt => (
+            "pkexec",
+            vec!["apt-get".to_string(), "autoremove".to_string(), "-y".to_string()],
+        ),
+        _ => return Ok(None),
+    };
+
+    let output = run_command(command, args.clone()).await?;
+    let details = command_details(command, &args, &output);
+    if output.code == 0 {
+        Ok(Some(details))
+    } else {
+        Err(format!("Orphan cleanup failed.\n\n{}", details))
     }
 }
 
 #[tauri::command]
-async fn list_user_installed_packages(app: tauri::AppHandle, force_refresh: bool) -> Result<Vec<UserPackageWithDependencies>, String> {
-    println!(
-        "Attempting to list user-installed packages. Force refresh: {}",
-        force_refresh
-    );
-    let cache_path = get_cache_path(&app)?;
-    println!("Cache path: {:?}", cache_path);
+async fn get_manager_statuses() -> Result<Vec<ManagerStatus>, String> {
+    let mut statuses = Vec::new();
+    for manager in [
+        PackageManagerId::Dnf,
+        PackageManagerId::Apt,
+        PackageManagerId::Snap,
+        PackageManagerId::Flatpak,
+    ] {
+        let installed = executable_in_path(manager.executable()).is_some()
+            && match manager {
+                PackageManagerId::Dnf => executable_in_path("rpm").is_some(),
+                PackageManagerId::Apt => executable_in_path("dpkg-query").is_some(),
+                _ => true,
+            };
+        let version = if installed {
+            manager_version(manager).await
+        } else {
+            None
+        };
+        statuses.push(manager_status_template(manager, installed, version));
+    }
+    Ok(statuses)
+}
+
+#[tauri::command]
+async fn list_packages(
+    app: tauri::AppHandle,
+    manager: PackageManagerId,
+    view: PackageView,
+    force_refresh: bool,
+) -> Result<Vec<PackageInfo>, String> {
+    if executable_in_path(manager.executable()).is_none() {
+        return Err(format!("{} is not installed or not on PATH.", manager.label()));
+    }
 
     if !force_refresh {
-        if let Some(cached_data) = load_cache(&app)? {
-            println!("Returning cached user package data.");
-            return Ok(cached_data);
+        if let Some(cached) = load_package_cache(&app, manager, view)? {
+            return Ok(cached);
         }
     }
-    println!("Cache not used or refresh forced. Fetching fresh data...");
 
-    let shell = app.shell();
-
-    // Step 1: Get all actually installed packages (our source of truth for "is it installed?")
-    let rpm_qa_output_result = shell
-        .command("rpm")
-        .args(["-qa", "--queryformat", "%{NAME}\n"]) // Get only base names
-        .output()
-        .await;
-
-    let actually_installed_set: HashSet<String> = match rpm_qa_output_result {
-        Ok(output) => {
-            if output.status.success() {
-                String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect()
-            } else {
-                return Err(format!(
-                    "Failed to get `rpm -qa` list: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                ));
-            }
-        }
-        Err(e) => return Err(format!("Shell command error for `rpm -qa`: {}", e)),
-    };
-    if actually_installed_set.is_empty() {
-        println!("`rpm -qa` returned no packages. Assuming no user packages can be listed.");
-         let empty_list = Vec::new();
-        if let Err(e) = save_cache(&app, &empty_list) {
-            eprintln!("Warning: Failed to save empty cache (rpm -qa was empty): {}", e);
-        }
-        return Ok(empty_list);
-    }
-
-
-    // Step 2: Get packages marked as user-installed by DNF
-    let dnf_history_output_result = shell
-        .command("dnf")
-        .args([
-            "repoquery",         // Changed from "history"
-            "--userinstalled",   // Argument for repoquery
-            "--quiet",
-        ])
-        .output()
-        .await;
-
-    let dnf_user_packages_list: Vec<String> = match dnf_history_output_result {
-        Ok(output_val) => {
-            if output_val.status.success() {
-                String::from_utf8_lossy(&output_val.stdout)
-                    .lines()
-                    .map(str::trim)
-                    .filter(|line| !line.is_empty() && !line.starts_with("Last metadata expiration check:"))
-                    .map(String::from)
-                    .collect()
-            } else {
-                return Err(format!(
-                    "Failed to get user-installed packages list (dnf): {}",
-                    String::from_utf8_lossy(&output_val.stderr)
-                ));
-            }
-        }
-        Err(e) => return Err(format!("Shell command error for user-installed packages list (dnf): {}", e)),
+    let packages = match manager {
+        PackageManagerId::Dnf => list_dnf_packages(view).await?,
+        PackageManagerId::Apt => list_apt_packages(view).await?,
+        PackageManagerId::Snap => list_snap_packages(view).await?,
+        PackageManagerId::Flatpak => list_flatpak_packages(view).await?,
     };
 
-    if dnf_user_packages_list.is_empty() {
-        println!("`dnf repoquery userinstalled` returned no packages.");
-        let empty_list = Vec::new();
-        if let Err(e) = save_cache(&app, &empty_list) {
-            eprintln!("Warning: Failed to save empty cache (dnf repoquery was empty): {}", e);
-        }
-        return Ok(empty_list);
+    let _ = save_package_cache(&app, manager, view, &packages);
+    Ok(packages)
+}
+
+#[tauri::command]
+async fn get_package_dependencies(
+    manager: PackageManagerId,
+    package_name: String,
+) -> Result<Vec<DependencyInfo>, String> {
+    dependencies_for_package(manager, &package_name).await
+}
+
+#[tauri::command]
+async fn execute_package_operation(
+    app: tauri::AppHandle,
+    args: PackageOperationArgs,
+) -> Result<PackageOperationResult, String> {
+    validate_package_name(&args.package_name)?;
+
+    if !package_is_installed(args.manager, &args.package_name).await? {
+        return Err(format!(
+            "'{}' is not installed according to {}.",
+            args.package_name,
+            args.manager.label()
+        ));
     }
 
-    // Step 3: Filter DNF's list against actually installed packages
-    let mut packages_to_process = Vec::new();
-    for pkg_name_from_dnf in dnf_user_packages_list {
-        // dnf history userinstalled might give package.arch or just name.
-        // rpm -qa --queryformat %{NAME} gives just the name.
-        // We need to compare them. extract_base_package_name can help.
-        let base_name_from_dnf = extract_base_package_name(&pkg_name_from_dnf);
-        if actually_installed_set.contains(&base_name_from_dnf) {
-            packages_to_process.push(base_name_from_dnf); // Add the base name for consistency
+    let (command, command_args) = match operation_command(&args) {
+        Ok(command) => command,
+        Err(reason) if args.dry_run && reason == "unsupported-dry-run" => {
+            return Ok(unsupported_preview_result(args.manager, args.operation));
+        }
+        Err(reason) => return Err(reason),
+    };
+
+    let output = run_command(&command, command_args.clone()).await?;
+    let details = command_details(&command, &command_args, &output);
+    let operation_label = match args.operation {
+        PackageOperation::Update => "update",
+        PackageOperation::Uninstall => "uninstall",
+    };
+
+    let mut success = output.code == 0;
+    let mut message = if success {
+        if args.dry_run {
+            format!("Preview completed for '{}'. No changes were made.", args.package_name)
         } else {
-            println!("Package '{}' (base: '{}') from DNF's userinstalled list is not in 'rpm -qa' output. Skipping.", pkg_name_from_dnf, base_name_from_dnf);
+            format!(
+                "{} {} completed for '{}'.",
+                args.manager.label(),
+                operation_label,
+                args.package_name
+            )
         }
-    }
-     // Deduplicate after base name extraction, as different arch/versions might resolve to same base name
-    let unique_packages_to_process: Vec<String> = packages_to_process.into_iter().collect::<HashSet<_>>().into_iter().collect();
-
-
-    if unique_packages_to_process.is_empty() {
-        println!("No user-installed packages remain after cross-referencing with rpm -qa.");
-        let empty_list = Vec::new();
-         if let Err(e) = save_cache(&app, &empty_list) {
-            eprintln!("Warning: Failed to save empty cache (no packages after filter): {}", e);
-        }
-        return Ok(empty_list);
-    }
-
-
-    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_RPM_QUERIES));
-    let mut tasks = Vec::new();
-
-    // Now process only the filtered and confirmed installed packages
-    for package_name_str in unique_packages_to_process { // Iterate over the filtered list
-        let app_clone = app.clone();
-        let sem_clone = semaphore.clone();
-        let task = tokio::spawn(async move {
-            let _permit = sem_clone.acquire().await.unwrap();
-            let shell_clone = app_clone.shell();
-
-            let deps_output_result = shell_clone
-                .command("rpm")
-                .args(["-qR", &package_name_str])
-                .output()
-                .await;
-
-            let dependencies = match deps_output_result {
-                Ok(dep_val) => {
-                    if dep_val.status.success() {
-                        let dep_stdout_str = String::from_utf8_lossy(&dep_val.stdout);
-                        parse_rpm_requires_output(&dep_stdout_str, &package_name_str)
-                    } else {
-                        // Log error but continue, package might not have deps or is virtual
-                        // eprintln!(
-                        //     "rpm -qR for {} failed: Status {}, Stderr: {}",
-                        //     package_name_str, 
-                        //     dep_val.status.code().unwrap_or(-1),
-                        //     String::from_utf8_lossy(&dep_val.stderr).trim()
-                        // );
-                        Vec::new()
-                    }
-                }
-                Err(_e) => {
-                    // eprintln!("Failed to execute rpm -qR for {}: {}", package_name_str, e);
-                    Vec::new()
-                }
-            };
-            
-            // Sort dependencies by name for consistent display
-            let mut sorted_deps = dependencies;
-            sorted_deps.sort_by(|a, b| a.name.cmp(&b.name));
-
-            // Get category
-            let category = get_package_category(&shell_clone, &package_name_str).await;
-
-            UserPackageWithDependencies {
-                name: package_name_str,
-                dependencies: sorted_deps,
-                category,
-            }
-        });
-        tasks.push(task);
-    }
-
-    let mut user_packages_with_deps = Vec::new();
-    for task in tasks {
-        match task.await {
-            Ok(pkg_with_deps) => user_packages_with_deps.push(pkg_with_deps),
-            Err(e) => eprintln!("Task join error: {}", e), // Log error and continue
-        }
-    }
-    
-    // Sort the final list of packages by name before caching and returning
-    user_packages_with_deps.sort_by(|a, b| a.name.cmp(&b.name));
-
-    if let Err(e) = save_cache(&app, &user_packages_with_deps) {
-        eprintln!("Warning: Failed to save updated cache: {}", e);
-        // Depending on desired behavior, you might choose to return an error here
-        // return Err(format!("Failed to save cache: {}", e));
-    }
-    Ok(user_packages_with_deps)
-}
-
-#[tauri::command]
-async fn manage_package_update(app: tauri::AppHandle, package_name: String) -> Result<PackageOperationResult, String> {
-    println!("Attempting to update package: {}", package_name);
-    let shell = app.shell();
-
-    // Command: pkexec dnf update <package_name> -y
-    let output_result = shell
-        .command("pkexec") // Use pkexec for privilege escalation
-        .args(["dnf", "update", &package_name, "--assumeyes"])
-        .output()
-        .await;
-
-    match output_result {
-        Ok(output) => {
-            let stdout_str = String::from_utf8_lossy(&output.stdout).into_owned();
-            let stderr_str = String::from_utf8_lossy(&output.stderr).into_owned();
-            let full_details = format!("STDOUT:\n{}\nSTDERR:\n{}", stdout_str, stderr_str);
-
-            if output.status.success() {
-                println!("Package '{}' updated successfully.", package_name);
-                Ok(PackageOperationResult {
-                    success: true,
-                    message: format!("Package '{}' updated successfully.", package_name),
-                    details: Some(full_details),
-                })
-            } else {
-                let err_msg = format!(
-                    "Failed to update package '{}'. Exit code: {}.\n{}",
-                    package_name,
-                    output.status.code().unwrap_or(-1),
-                    if stderr_str.is_empty() { &stdout_str } else { &stderr_str }
-                );
-                eprintln!("{}", err_msg);
-                Ok(PackageOperationResult {
-                    success: false,
-                    message: format!("Failed to update package '{}'.", package_name),
-                    details: Some(full_details),
-                })
-            }
-        }
-        Err(e) => {
-            let err_msg = format!("Error executing update command for '{}': {}", package_name, e);
-            eprintln!("{}", err_msg);
-            Err(err_msg)
-        }
-    }
-}
-
-#[tauri::command]
-async fn execute_package_uninstall(app: tauri::AppHandle, args: UninstallArgs) -> Result<PackageOperationResult, String> {
-    println!("Executing uninstall for package: {}, Mode: {:?}, Cleanup: {}", args.package_name, args.mode, args.cleanup_orphans);
-    let shell = app.shell();
-    let mut final_message = String::new();
-    let mut final_details = String::new();
-    let mut overall_success = true;
-
-    let (cmd_name, cmd_args, _is_privileged) = match args.mode { // _is_privileged was unused
-        UninstallMode::Safe => ("pkexec", vec!["dnf".to_string(), "remove".to_string(), args.package_name.clone(), "--assumeyes".to_string()], true),
-        UninstallMode::Force => ("pkexec", vec!["rpm".to_string(), "-e".to_string(), "--nodeps".to_string(), args.package_name.clone()], true),
-        UninstallMode::DryRunSafe => ("dnf", vec!["remove".to_string(), args.package_name.clone(), "--assumeno".to_string()], false),
-        UninstallMode::DryRunForce => ("rpm", vec!["-e".to_string(), "--nodeps".to_string(), args.package_name.clone(), "--test".to_string()], false),
+    } else {
+        format!(
+            "{} {} failed for '{}'.",
+            args.manager.label(),
+            operation_label,
+            args.package_name
+        )
     };
 
-    println!("Executing command: {} with args: {:?}", cmd_name, cmd_args);
-
-    let output_result = shell
-        .command(cmd_name)
-        .args(&cmd_args)
-        .output()
-        .await;
-
-    match output_result {
-        Ok(output) => {
-            let stdout_str = String::from_utf8_lossy(&output.stdout).into_owned();
-            let stderr_str = String::from_utf8_lossy(&output.stderr).into_owned();
-            let details_for_this_step = format!("STDOUT:\n{}\nSTDERR:\n{}", stdout_str, stderr_str);
-
-            if output.status.success() {
-                let success_msg = format!(
-                    "{} operation for '{}' completed successfully.",
-                    match args.mode {
-                        UninstallMode::DryRunSafe | UninstallMode::DryRunForce => "Dry run",
-                        _ => "Uninstall"
-                    },
-                    args.package_name
-                );
-                println!("{}", success_msg);
-                final_message.push_str(&success_msg);
-                final_details.push_str(&details_for_this_step);
-                if matches!(args.mode, UninstallMode::DryRunSafe | UninstallMode::DryRunForce) {
-                    final_details = stdout_str; // For dry run, stdout is usually the most relevant detail
-                }
-            } else {
-                overall_success = false;
-                let err_msg = format!(
-                    "Failed {} for package '{}'. Exit code: {}.\nDetails:\n{}",
-                    match args.mode {
-                        UninstallMode::DryRunSafe | UninstallMode::DryRunForce => "dry run",
-                        _ => "uninstall"
-                    },
-                    args.package_name,
-                    output.status.code().unwrap_or(-1),
-                    if stderr_str.is_empty() { &stdout_str } else { &stderr_str }
-                );
-                eprintln!("{}", err_msg);
-                final_message.push_str(&format!(
-                    "Failed {} for package '{}'.",
-                     match args.mode {
-                        UninstallMode::DryRunSafe | UninstallMode::DryRunForce => "dry run",
-                        _ => "uninstall"
-                    },
-                    args.package_name
-                ));
-                final_details.push_str(&details_for_this_step);
+    let mut details_parts = vec![details];
+    if success
+        && !args.dry_run
+        && args.operation == PackageOperation::Uninstall
+        && args.cleanup_orphans
+        && matches!(args.manager, PackageManagerId::Dnf | PackageManagerId::Apt)
+    {
+        match cleanup_orphans(args.manager).await {
+            Ok(Some(cleanup_details)) => {
+                message.push_str(" Orphan cleanup completed.");
+                details_parts.push(cleanup_details);
             }
-        }
-        Err(e) => {
-            overall_success = false;
-            let err_msg = format!("Error executing command for '{}': {}", args.package_name, e);
-            eprintln!("{}", err_msg);
-            final_message = err_msg.clone();
-            final_details = err_msg;
-        }
-    }
-
-    // Handle cleanup_orphans for Safe mode after successful uninstall
-    if overall_success && matches!(args.mode, UninstallMode::Safe) && args.cleanup_orphans {
-        println!("Attempting to cleanup orphans after uninstalling '{}'", args.package_name);
-        final_details.push_str("\n\n--- Autoremove (Orphans) ---\n");
-
-        let autoremove_output_result = shell
-            .command("pkexec")
-            .args(["dnf", "autoremove", "--assumeyes"])
-            .output()
-            .await;
-
-        match autoremove_output_result {
-            Ok(output) => {
-                let stdout_str = String::from_utf8_lossy(&output.stdout).into_owned();
-                let stderr_str = String::from_utf8_lossy(&output.stderr).into_owned();
-                let autoremove_details = format!("STDOUT:\n{}\nSTDERR:\n{}", stdout_str, stderr_str);
-                final_details.push_str(&autoremove_details);
-
-                if output.status.success() {
-                    println!("Orphan cleanup successful.");
-                    final_message.push_str("\nOrphan cleanup successful.");
-                } else {
-                    overall_success = false; // Mark overall as failed if autoremove fails
-                    let err_msg = format!(
-                        "Orphan cleanup failed after uninstalling '{}'. Exit code: {}.\n{}",
-                        args.package_name,
-                        output.status.code().unwrap_or(-1),
-                        if stderr_str.is_empty() { &stdout_str } else { &stderr_str }
-                    );
-                    eprintln!("{}", err_msg);
-                    final_message.push_str("\nOrphan cleanup failed.");
-                }
-            }
-            Err(e) => {
-                overall_success = false;
-                let err_msg = format!("Error executing dnf autoremove: {}", e);
-                eprintln!("{}", err_msg);
-                final_message.push_str(&format!("\nError during orphan cleanup: {}", e));
-                final_details.push_str(&format!("\nError during orphan cleanup: {}", e));
+            Ok(None) => {}
+            Err(error) => {
+                success = false;
+                message.push_str(" Orphan cleanup failed.");
+                details_parts.push(error);
             }
         }
     }
 
-    // After all operations, including potential autoremove
-    if overall_success && !matches!(args.mode, UninstallMode::DryRunSafe | UninstallMode::DryRunForce) {
-        println!("Uninstall successful, attempting to clear package cache.");
-        final_message.push_str(&format!("
-Uninstall of {} successful.", args.package_name)); // Add confirmation to user message
-        match get_cache_path(&app) {
-            Ok(cache_path) => {
-                if cache_path.exists() {
-                    if let Err(e) = fs::remove_file(&cache_path) {
-                        let cache_err_msg = format!("
-Warning: Failed to delete package cache file at {:?}: {}", cache_path, e);
-                        eprintln!("{}", cache_err_msg);
-                        final_message.push_str(&cache_err_msg);
-                        // Don't make the whole operation fail for this, but log it.
-                    } else {
-                        println!("Successfully deleted package cache file.");
-                        final_message.push_str("
-Package cache cleared for next refresh.");
-                    }
-                } else {
-                    println!("Package cache file not found, no deletion needed.");
-                     final_message.push_str("
-Package cache was not present.");
-                }
-            }
-            Err(e) => {
-                let cache_path_err_msg = format!("
-Warning: Failed to get cache path for deletion: {}", e);
-                eprintln!("{}", cache_path_err_msg);
-                final_message.push_str(&cache_path_err_msg);
-            }
-        }
+    if success && !args.dry_run {
+        clear_manager_cache(&app, args.manager);
     }
 
     Ok(PackageOperationResult {
-        success: overall_success,
-        message: final_message.trim().to_string(), // Trim leading/trailing newlines
-        details: Some(final_details),
+        success,
+        message,
+        details: Some(details_parts.join("\n\n---\n\n")),
+        command: Some(command_line(&command, &command_args)),
+        dry_run: args.dry_run,
     })
 }
 
@@ -718,62 +1129,49 @@ Warning: Failed to get cache path for deletion: {}", e);
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_shell::init())
-        .setup(|_app| { 
-            Ok(())
-        })
         .invoke_handler(tauri::generate_handler![
-            greet, 
-            list_installed_packages, 
-            list_user_installed_packages,
-            manage_package_update,
-            execute_package_uninstall
+            get_manager_statuses,
+            list_packages,
+            get_package_dependencies,
+            execute_package_operation
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
-// Test for extract_base_package_name
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_name() {
-        assert_eq!(extract_base_package_name("package-name-1.2.3-4.fc36.x86_64"), "package-name");
-        assert_eq!(extract_base_package_name("package-name-1.2.3"), "package-name");
-        assert_eq!(extract_base_package_name("package-name"), "package-name");
-        assert_eq!(extract_base_package_name("package-name.x86_64"), "package-name"); // Added test for arch
-        assert_eq!(extract_base_package_name("libX11-1.2.3-4.fc36.x86_64"), "libX11");
-        assert_eq!(extract_base_package_name("python3-foobar-0.1.1-11.fc39.noarch"), "python3-foobar");
-        assert_eq!(extract_base_package_name("my-package-devel-1.0-1.noarch"), "my-package-devel");
-        assert_eq!(extract_base_package_name("package-1:1.0-1"), "package"); // Epoch
-        assert_eq!(extract_base_package_name("perl(Some::Module)"), "perl(Some::Module)"); // Should be kept
-        assert_eq!(extract_base_package_name("rpmlib(VersionedDependencies)"), "rpmlib");
-        assert_eq!(extract_base_package_name("/usr/bin/bash"), "bash");
-        assert_eq!(extract_base_package_name("libcrypto.so.1.1()(64bit)"), "libcrypto.so.1.1");
-        assert_eq!(extract_base_package_name("A spezielle.package-1.0"), "A spezielle.package");
-
-
+    fn validates_safe_package_names() {
+        assert!(validate_package_name("bash").is_ok());
+        assert!(validate_package_name("libssl3:amd64").is_ok());
+        assert!(validate_package_name("org.mozilla.firefox").is_ok());
+        assert!(validate_package_name("-rf").is_err());
+        assert!(validate_package_name("name;rm").is_err());
+        assert!(validate_package_name("../name").is_err());
     }
-     #[test]
-    fn test_parse_rpm_deps() {
-        let rpm_output = "rpmlib(CompressedFileNames) <= 3.0.4-1\n\
-        rpmlib(FileDigests) <= 4.6.0-1\n\
-        rpmlib(PayloadFilesHavePrefix) <= 4.0-1\n\
-        rpmlib(PayloadIsXz) <= 5.2-1\n\
-        libc.so.6()(64bit)\n\
-        libm.so.6()(64bit)\n\
-        libz.so.1()(64bit)\n\
-        my-own-package-dep\n\
-        /usr/bin/perl\n\
-        perl(strict)\n\
-        perl(warnings)";
-        let deps = parse_rpm_requires_output(rpm_output, "my-main-package");
-        assert!(deps.contains(&DisplayablePackage { name: "rpmlib".to_string() }));
-        assert!(deps.contains(&DisplayablePackage { name: "libc.so.6".to_string() }));
-        assert!(deps.contains(&DisplayablePackage { name: "my-own-package-dep".to_string() }));
-        assert!(deps.contains(&DisplayablePackage { name: "perl".to_string() })); // from /usr/bin/perl
-        assert!(deps.contains(&DisplayablePackage { name: "perl(strict)".to_string() })); // full perl module name
+
+    #[test]
+    fn extracts_names_from_nevra_fallbacks() {
+        assert_eq!(
+            extract_package_name("python3-foobar-0.1.1-11.fc39.noarch"),
+            "python3-foobar"
+        );
+        assert_eq!(extract_package_name("package.x86_64"), "package");
+        assert_eq!(extract_package_name("package-name"), "package-name");
+    }
+
+    #[test]
+    fn parses_apt_dependency_lines() {
+        assert_eq!(
+            parse_apt_dependency_line("Depends: libc6 (>= 2.34)").unwrap(),
+            DependencyInfo {
+                name: "libc6".to_string(),
+                kind: "Depends".to_string()
+            }
+        );
+        assert!(parse_apt_dependency_line("Breaks: old-package").is_none());
     }
 }
